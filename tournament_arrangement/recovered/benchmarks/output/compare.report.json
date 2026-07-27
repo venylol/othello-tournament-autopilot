@@ -1,0 +1,485 @@
+{
+  "generatedAt": "2026-06-06T10:20:09.340Z",
+  "total": 55,
+  "pass": 55,
+  "fail": 0,
+  "reports": [
+    {
+      "id": "Junior_group__01",
+      "status": "pass",
+      "expectedCount": 17,
+      "actualCount": 17,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__02",
+      "status": "pass",
+      "expectedCount": 14,
+      "actualCount": 14,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__03",
+      "status": "pass",
+      "expectedCount": 15,
+      "actualCount": 15,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__04",
+      "status": "pass",
+      "expectedCount": 23,
+      "actualCount": 23,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__05",
+      "status": "pass",
+      "expectedCount": 17,
+      "actualCount": 17,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__06",
+      "status": "pass",
+      "expectedCount": 14,
+      "actualCount": 14,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__07",
+      "status": "pass",
+      "expectedCount": 15,
+      "actualCount": 15,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__08",
+      "status": "pass",
+      "expectedCount": 13,
+      "actualCount": 13,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__09",
+      "status": "pass",
+      "expectedCount": 20,
+      "actualCount": 20,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__10",
+      "status": "pass",
+      "expectedCount": 22,
+      "actualCount": 22,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__11",
+      "status": "pass",
+      "expectedCount": 25,
+      "actualCount": 25,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__12",
+      "status": "pass",
+      "expectedCount": 22,
+      "actualCount": 22,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__13",
+      "status": "pass",
+      "expectedCount": 18,
+      "actualCount": 18,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__14",
+      "status": "pass",
+      "expectedCount": 17,
+      "actualCount": 17,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Junior_group__15",
+      "status": "pass",
+      "expectedCount": 18,
+      "actualCount": 18,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Longterm_player__01",
+      "status": "pass",
+      "expectedCount": 15,
+      "actualCount": 15,
+      "diffs": [],
+      "reviewNotes": [
+        "Rebuilt from source list; '--' rows excluded."
+      ]
+    },
+    {
+      "id": "Longterm_player__02",
+      "status": "pass",
+      "expectedCount": 9,
+      "actualCount": 9,
+      "diffs": [],
+      "reviewNotes": [
+        "Rebuilt from source list; '--' rows excluded."
+      ]
+    },
+    {
+      "id": "Longterm_player__03",
+      "status": "pass",
+      "expectedCount": 16,
+      "actualCount": 16,
+      "diffs": [],
+      "reviewNotes": [
+        "Rebuilt from source list; '--' rows excluded."
+      ]
+    },
+    {
+      "id": "Longterm_player__04",
+      "status": "pass",
+      "expectedCount": 14,
+      "actualCount": 14,
+      "diffs": [],
+      "reviewNotes": [
+        "Rebuilt from source list; '--' rows excluded."
+      ]
+    },
+    {
+      "id": "Longterm_player__05",
+      "status": "pass",
+      "expectedCount": 11,
+      "actualCount": 11,
+      "diffs": [],
+      "reviewNotes": [
+        "Rebuilt from source list; '--' rows excluded."
+      ]
+    },
+    {
+      "id": "Longterm_player__06",
+      "status": "pass",
+      "expectedCount": 14,
+      "actualCount": 14,
+      "diffs": [],
+      "reviewNotes": [
+        "Rebuilt from source list; '--' rows excluded."
+      ]
+    },
+    {
+      "id": "New_comer_group__01",
+      "status": "pass",
+      "expectedCount": 15,
+      "actualCount": 15,
+      "diffs": [],
+      "reviewNotes": [
+        "Merged emoji nickname with its account.",
+        "Dropped header noise."
+      ]
+    },
+    {
+      "id": "New_comer_group__02",
+      "status": "pass",
+      "expectedCount": 11,
+      "actualCount": 11,
+      "diffs": [],
+      "reviewNotes": [
+        "Split compact name/account/club rows.",
+        "Dropped header noise.",
+        "Removed referee row: 深红 Eklos HTN."
+      ]
+    },
+    {
+      "id": "New_comer_group__03",
+      "status": "pass",
+      "expectedCount": 20,
+      "actualCount": 20,
+      "diffs": [],
+      "reviewNotes": [
+        "Split compact name/account/club rows.",
+        "Dropped header noise."
+      ]
+    },
+    {
+      "id": "New_comer_group__04",
+      "status": "pass",
+      "expectedCount": 16,
+      "actualCount": 16,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "New_comer_group__05",
+      "status": "pass",
+      "expectedCount": 15,
+      "actualCount": 15,
+      "diffs": [],
+      "reviewNotes": [
+        "Removed decoration / sponsor / placeholder rows."
+      ]
+    },
+    {
+      "id": "New_comer_group__06",
+      "status": "pass",
+      "expectedCount": 20,
+      "actualCount": 20,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "New_comer_group__07",
+      "status": "pass",
+      "expectedCount": 24,
+      "actualCount": 24,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "New_comer_group__08",
+      "status": "pass",
+      "expectedCount": 27,
+      "actualCount": 27,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "New_comer_group__09",
+      "status": "pass",
+      "expectedCount": 37,
+      "actualCount": 37,
+      "diffs": [],
+      "reviewNotes": [
+        "Removed decoration / sponsor / placeholder rows."
+      ]
+    },
+    {
+      "id": "New_comer_group__10",
+      "status": "pass",
+      "expectedCount": 41,
+      "actualCount": 41,
+      "diffs": [],
+      "reviewNotes": [
+        "Removed decoration / sponsor / placeholder rows."
+      ]
+    },
+    {
+      "id": "New_comer_group__11",
+      "status": "pass",
+      "expectedCount": 34,
+      "actualCount": 34,
+      "diffs": [],
+      "reviewNotes": [
+        "Removed decoration / sponsor / placeholder rows."
+      ]
+    },
+    {
+      "id": "New_comer_group__12",
+      "status": "pass",
+      "expectedCount": 25,
+      "actualCount": 25,
+      "diffs": [],
+      "reviewNotes": [
+        "Removed decoration / sponsor / placeholder rows."
+      ]
+    },
+    {
+      "id": "New_comer_group__13",
+      "status": "pass",
+      "expectedCount": 15,
+      "actualCount": 15,
+      "diffs": [],
+      "reviewNotes": [
+        "Merged emoji nickname with its account.",
+        "Dropped header noise."
+      ]
+    },
+    {
+      "id": "New_comer_group__14",
+      "status": "pass",
+      "expectedCount": 21,
+      "actualCount": 21,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "New_comer_group__15",
+      "status": "pass",
+      "expectedCount": 14,
+      "actualCount": 14,
+      "diffs": [],
+      "reviewNotes": [
+        "Removed decoration / sponsor / placeholder rows."
+      ]
+    },
+    {
+      "id": "open_group__01",
+      "status": "pass",
+      "expectedCount": 30,
+      "actualCount": 30,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__02",
+      "status": "pass",
+      "expectedCount": 32,
+      "actualCount": 32,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__03",
+      "status": "pass",
+      "expectedCount": 26,
+      "actualCount": 26,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__04",
+      "status": "pass",
+      "expectedCount": 34,
+      "actualCount": 34,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__05",
+      "status": "pass",
+      "expectedCount": 28,
+      "actualCount": 28,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__06",
+      "status": "pass",
+      "expectedCount": 24,
+      "actualCount": 24,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__07",
+      "status": "pass",
+      "expectedCount": 29,
+      "actualCount": 29,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__08",
+      "status": "pass",
+      "expectedCount": 36,
+      "actualCount": 36,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__09",
+      "status": "pass",
+      "expectedCount": 39,
+      "actualCount": 39,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__10",
+      "status": "pass",
+      "expectedCount": 40,
+      "actualCount": 40,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__11",
+      "status": "pass",
+      "expectedCount": 50,
+      "actualCount": 50,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__12",
+      "status": "pass",
+      "expectedCount": 51,
+      "actualCount": 51,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__13",
+      "status": "pass",
+      "expectedCount": 41,
+      "actualCount": 41,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__14",
+      "status": "pass",
+      "expectedCount": 34,
+      "actualCount": 34,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "open_group__15",
+      "status": "pass",
+      "expectedCount": 25,
+      "actualCount": 25,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Special_tournament__01",
+      "status": "pass",
+      "expectedCount": 23,
+      "actualCount": 23,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Special_tournament__02",
+      "status": "pass",
+      "expectedCount": 22,
+      "actualCount": 22,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Special_tournament__03",
+      "status": "pass",
+      "expectedCount": 13,
+      "actualCount": 13,
+      "diffs": [],
+      "reviewNotes": []
+    },
+    {
+      "id": "Special_tournament__04",
+      "status": "pass",
+      "expectedCount": 24,
+      "actualCount": 24,
+      "diffs": [],
+      "reviewNotes": []
+    }
+  ]
+}

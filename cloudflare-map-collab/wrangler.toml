@@ -1,0 +1,8 @@
+name = "onlicheck-map"
+compatibility_date = "2026-06-09"
+pages_build_output_dir = "public"
+
+[[d1_databases]]
+binding = "MAP_DB"
+database_name = "onlicheck_map_collab"
+database_id = "a4fd8676-0cb3-48d8-b3ce-61f3bac8e942"

@@ -1,0 +1,2 @@
+"use strict";(self.webpackChunkclient=self.webpackChunkclient||[]).push([[173],{2173:function(t,n,e){e.r(n),e.d(n,{Invitation:function(){return i}});var c=e(2791),a=e(7689),f=e(1224),i=function(){var t=(0,c.useContext)(f.V),n=t.socket,e=t.userId,i=(0,a.UO)().id,u=(0,a.s0)();(0,c.useEffect)((function(){if(e&&n){n.emit("matched",i);var t=function(t){u("/game/".concat(t,"#start"))};return n.on("match",t),n.on("navigate",(function(t){u(t)})),function(){n.off("match",t),n.off("navigate")}}}),[n,e])};n.default=i}}]);
+//# sourceMappingURL=173.4fd261ca.chunk.js.map

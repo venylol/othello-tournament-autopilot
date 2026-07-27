@@ -1,0 +1,5 @@
+// This function allow to reference async chunks and sibling chunks for the entrypoint
+__webpack_require__.u = function(chunkId) {
+	// return url for filenames based on template
+	return "static/js/" + (chunkId === 828 ? "em-pthread" : chunkId) + "." + {"591":"ab9b1678","828":"1de81181"}[chunkId] + ".chunk.js";
+};

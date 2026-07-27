@@ -1,0 +1,351 @@
+@import "../css/historyTable.css";
+@import "../css/circleStats.css";
+
+@keyframes ripples-toggle {
+  0% {
+    width: 0px;
+    height: 0px;
+    opacity: 0.5;
+  }
+  100% {
+    width: 250px;
+    height: 250px;
+    opacity: 0;
+  }
+}
+
+@keyframes ripples-toggle-rounds {
+  0% {
+    width: 0px;
+    height: 0px;
+    opacity: 0.5;
+  }
+  100% {
+    width: 60px;
+    height: 60px;
+    opacity: 0;
+  }
+}
+
+#root {
+  --disc-size: 35px;
+  --top-margin: 50px;
+  --photo-width: 29.4%;
+  /* --photo-width: 169px; */
+  /* --photo-height: 34.02vw; */
+  --photo-height: 34.02%;
+  --photo-margin-top: 10px;
+  --name-text-size: 18px;
+  --info-text-size: 15px;
+  /* --info-width: 31vw; */
+  --info-width: 29%;
+
+  position: absolute;
+  overflow: hidden;
+  width: 100%;
+  /* min-height: 100%; */
+  background-color: #312e2b;
+}
+
+/* @media only screen and (max-width: 720px) and (orientation: portrait) {
+  #root {
+    --disc-size: 35px;
+    --info-width: 29vw;
+  }
+} */
+
+/* @media only screen and (max-width: 720px) and (orientation: landscape) {
+  #root {
+    --disc-size: 35px;
+    --photo-width: 212px;
+    --photo-height: 245px;
+    --photo-margin-top: 10px;
+    --name-text-size: 24.6px;
+    --info-text-size: 21.6px;
+    --info-width: 218.7px;
+  }
+} */
+
+/* @media only screen and (min-width: 721px) and (orientation: landscape) {
+  #root {
+    --disc-size: 35px;
+    --photo-width: 212px;
+    --photo-height: 245px;
+    --photo-margin-top: 10px;
+    --name-text-size: 24.6px;
+    --info-text-size: 21.6px;
+    --info-width: 218.7px;
+    
+  }
+} */
+
+/* @media only screen and (min-width: 721px) and (orientation: portrait) {
+  #root {
+    --disc-size: 35px;
+    --photo-width: 211.73px;
+    --photo-height: 245px;
+    --name-text-size: 24.6px;
+    --info-text-size: 21.6px;
+    --info-width: 218.7px;
+  }
+} */
+
+
+div.filler {
+  background: #312e2b;
+  width: 100%;
+  height: var(--top-margin);
+  position: relative;
+  overflow: hidden;
+}
+
+.layout {
+  width: 98vw; 
+  max-width: 490px;
+  margin: 50px auto 0 auto;
+}
+
+.game-layout {
+  width: 98vw; 
+  max-width: 490px;;
+  
+  position: absolute;
+  top: calc(var(--global-height) * 0.5);
+  left: 50%;
+  transform: translate(-50%,-50%);
+  /* max-height: var(--); */
+}
+
+div.info-container {
+  position: relative;
+  overflow: hidden;
+  /* top: 50px; */
+  margin: 0 auto 0 auto;
+  width: 98vw;
+  max-width: 490px;
+  z-index: 100;
+  background-color: #312e2b;
+  display: flex;
+  height: fit-content; 
+  justify-content: left;
+  flex-wrap: wrap;
+}
+
+#root::-webkit-scrollbar {
+  display: none;
+}
+
+.nickname {
+  width: 100%;
+  color:white;
+  height: 20px;
+  font-weight: 800;
+  font-size: 20px;
+  text-align: left;
+  line-height: 1;
+  margin-top: 5px;
+  padding-left: 1vw;
+}
+
+div.info-card-wrap {
+  height: var(--photo-height);
+  width: calc(96vw - var(--photo-width));
+  max-width: calc(490px - var(--photo-width) - var(--photo-width) / 14.7);
+  max-height: 245px;
+  display: flex;
+  background-color: #272522;
+  border-radius: 0.5rem !important;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-left: calc(var(--photo-width) / 14.7);
+  margin-top: var(--photo-margin-top);
+}
+
+div.info-card {
+  width: 50%;
+  font-weight: 400;
+  line-height: 1;
+}
+
+div.info-card.info {
+  display: block;
+  justify-content: space-between;
+  color: #b4b3b2;
+  padding-top: var(--photo-margin-top);
+  padding-left: var(--photo-margin-top);
+  max-width: var(--info-width);
+  max-height: 245px;
+  font-size: var(--info-text-size);
+}
+
+div.info-card .name {
+  font-weight: 700;
+  /* width: 34vw; */
+  max-width: var(--info-width);
+  font-size: 18px;
+  /* height: 16.66%; */
+  height: 21px;
+}
+
+div.text-info {
+  height: 15%;
+}
+
+div.country {
+  height: 20%;
+  display: flex;
+}
+
+div.country>span {
+  margin-left: 5px;
+} 
+
+div.flag {
+  /* height: 19px;
+  width: 28.56px; */
+  height: 3vw;
+  max-height: 21.6px;
+  /* width: 5.25vw; */
+  margin-right: 1vw;
+  align-items: center;
+  justify-content: center;
+}
+
+img.flag {
+  height: 100%;
+}
+
+div.info-card.photo {
+  width: var(--photo-width);
+  height: var(--photo-height);
+  max-width: 211.73px;
+  max-height: 245px;
+  margin-top: var(--photo-margin-top);
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+img.photo {
+  width: 100%;
+  border-radius: 0.5rem !important;
+}
+
+div.date-text span{
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+
+.toggle-button-contaner {
+  width: 100%;
+  height: 30px;
+  margin-top: 50px;
+  display: flex;
+  position: relative;
+}
+
+.toggle-button {
+  width: 33.33%;
+  color: #aca9a9;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #aca9a9;
+  padding: 0;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.toggle-button:hover {
+  border-bottom: 3px solid white;
+  background-color: #272522;
+}
+
+.toggle-button:disabled {
+  border-bottom: 3px solid white;
+  background-color: #1f1e1b;
+  font-weight: 700;
+  font-size: larger;
+  color: white;
+}
+.toggle-button:focus {
+  border-bottom: 3px solid white;
+  background-color: #1f1e1b;
+  font-weight: 700;
+  font-size: larger;
+  color: white;
+}
+
+div.toggle-footer {
+  width: 100%;
+  left: auto;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+div.toggle {
+  width: inherit;
+}
+
+div.search-contaner {
+  background-color: #1f1e1b;
+  border-top-left-radius: 0.5rem; 
+  border-top-right-radius: 0.5rem; 
+  width: 100%;
+  margin-top: var(--photo-margin-top);
+  margin-bottom: 1px;
+  margin-right: 0;
+  display: flex;
+  justify-content: center;
+}
+
+input.search-input {
+  color: #d4d3d3;
+  background-color: transparent;
+  border: 0;
+  width: 45%;
+  font-weight: 600;
+  border-bottom: none;
+  padding-left: 10px;
+  margin: 0 0 0 0;
+  height: 30px;
+  min-height: 30px;
+}
+
+input.search-input:focus {
+  border-bottom: none;
+  box-shadow: none;
+  outline: none;
+}
+
+input.search-input::placeholder {
+  color: #b4b3b2;
+  font-weight: 600;
+  opacity: 30%;
+}
+
+input.search-input:focus::placeholder {
+  color: transparent;
+}
+
+.date-text {
+  text-align: right;
+  width: calc(50% - 10px);
+  color: #aca9a9;
+  display: flex;
+  justify-content: right;
+  align-items: center;
+}
+
+/* @media only screen and (max-width: 720px) and (min-height: 550px) {
+  #root {
+    overflow-x: hidden;
+    width:100%
+  }
+} */
+
+
+

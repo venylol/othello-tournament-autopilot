@@ -1,0 +1,394 @@
+/* ===========================
+   Tournament Winner Modal
+   =========================== */
+
+/* Noto Color Emoji - consistent cross-platform emoji rendering */
+@font-face {
+    font-family: 'Noto Color Emoji';
+    src: url('../../fonts/NotoColorEmoji.ttf') format('truetype');
+    font-display: swap;
+}
+
+/* Overlay - full screen dark backdrop */
+.winner-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: winnerFadeIn 0.4s ease-out;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+@keyframes winnerFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Confetti canvas - prevent scrollbar flicker */
+.winner-confetti-canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10000;
+    display: block;
+}
+
+/* Modal content - brown site theme */
+.winner-modal-content {
+    position: relative;
+    z-index: 10001;
+    background: linear-gradient(145deg, #262421 0%, #1f1e1b 50%, #312e2b 100%);
+    border-radius: 1.45rem;
+    padding: 30px 24px 24px;
+    max-width: 540px;
+    width: 92vw;
+    max-height: 88vh;
+    overflow-y: auto;
+    scrollbar-width: none;
+    box-shadow: 
+        0 0 60px rgba(255, 215, 0, 0.15),
+        0 0 120px rgba(255, 215, 0, 0.05),
+        0 20px 60px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 215, 0, 0.15);
+    animation: winnerSlideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.winner-modal-content::-webkit-scrollbar {
+    display: none;
+}
+
+@keyframes winnerSlideUp {
+    from {
+        opacity: 0;
+        transform: translateY(40px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* Close button */
+.winner-modal-close {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    background: rgba(255, 255, 255, 0.08);
+    border: none;
+    color: #aca9a9;
+    font-size: 18px;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.winner-modal-close:hover {
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+    transform: scale(1.1);
+}
+
+/* Trophy header */
+.winner-trophy-header {
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+.winner-trophy-icon {
+    font-size: 56px;
+    font-family: 'Noto Color Emoji', sans-serif;
+    animation: trophyBounce 1s ease-in-out infinite alternate;
+    filter: drop-shadow(0 4px 12px rgba(255, 215, 0, 0.4));
+}
+
+@keyframes trophyBounce {
+    0% { transform: scale(1) rotate(-3deg); }
+    100% { transform: scale(1.08) rotate(3deg); }
+}
+
+.winner-title {
+    font-size: 26px;
+    font-weight: 800;
+    background: linear-gradient(90deg, #FFD700, #FFA500, #FFD700);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: shimmerText 3s linear infinite;
+    margin: 8px 0 4px;
+    letter-spacing: 0.5px;
+}
+
+@keyframes shimmerText {
+    0% { background-position: 0% center; }
+    100% { background-position: 200% center; }
+}
+
+.winner-tournament-name {
+    color: #aca9a9;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 4px 0 0;
+}
+
+/* Podium */
+.winner-podium {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 8px;
+    margin: 20px auto 24px;
+    max-width: 400px;
+    min-height: 220px;
+}
+
+.podium-slot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    animation: podiumReveal 0.6s ease-out both;
+}
+
+.podium-slot.podium-2nd { animation-delay: 0.3s; }
+.podium-slot.podium-1st { animation-delay: 0.5s; }
+.podium-slot.podium-3rd { animation-delay: 0.1s; }
+
+@keyframes podiumReveal {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.podium-medal {
+    font-size: 32px;
+    font-family: 'Noto Color Emoji', sans-serif;
+    margin-bottom: 4px;
+    filter: drop-shadow(0 2px 6px rgba(0,0,0,0.3));
+}
+
+.podium-avatar {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    overflow: visible;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,255,255,0.06);
+    border: 2px solid rgba(255, 215, 0, 0.2);
+    margin-bottom: 6px;
+}
+
+.podium-avatar-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.podium-avatar-flag {
+    position: absolute;
+    bottom: -4px;
+    right: -4px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #262421;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* border: 1px solid rgba(255, 255, 255, 0.15); */
+    overflow: hidden;
+}
+
+.podium-avatar-flag img {
+    width: 14px;
+    height: 14px;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+.podium-1st .podium-avatar {
+    width: 52px;
+    height: 52px;
+    border-color: #FFD700;
+    box-shadow: 0 0 16px rgba(255, 215, 0, 0.3);
+}
+
+.podium-1st .podium-avatar-flag {
+    width: 20px;
+    height: 20px;
+}
+
+.podium-1st .podium-avatar-flag img {
+    width: 16px;
+    height: 16px;
+}
+
+.podium-2nd .podium-avatar {
+    border-color: #C0C0C0;
+    box-shadow: 0 0 12px rgba(192, 192, 192, 0.2);
+}
+
+.podium-3rd .podium-avatar {
+    border-color: #CD7F32;
+    box-shadow: 0 0 12px rgba(205, 127, 50, 0.2);
+}
+
+.podium-nick {
+    font-size: 13px;
+    font-weight: 700;
+    color: whitesmoke;
+    text-align: center;
+    word-break: break-word;
+    max-width: 100px;
+    line-height: 1.2;
+    margin-bottom: 2px;
+}
+
+.podium-1st .podium-nick {
+    font-size: 15px;
+    color: #FFD700;
+}
+
+.podium-score {
+    font-size: 11px;
+    color: #aca9a9;
+    margin-bottom: 4px;
+}
+
+.podium-label {
+    font-size: 10px;
+    color: #b4b3b2;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+}
+
+/* Podium blocks */
+.podium-block {
+    width: 100%;
+    border-radius: 8px 8px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 900;
+    font-size: 28px;
+    color: rgba(255,255,255,0.15);
+}
+
+.podium-block.podium-1st {
+    height: 100px;
+    background: linear-gradient(180deg, #FFD700 0%, #B8860B 100%);
+    box-shadow: 0 0 20px rgba(255, 215, 0, 0.2);
+}
+
+.podium-block.podium-2nd {
+    height: 72px;
+    background: linear-gradient(180deg, #C0C0C0 0%, #808080 100%);
+    box-shadow: 0 0 16px rgba(192, 192, 192, 0.15);
+}
+
+.podium-block.podium-3rd {
+    height: 52px;
+    background: linear-gradient(180deg, #CD7F32 0%, #8B4513 100%);
+    box-shadow: 0 0 16px rgba(205, 127, 50, 0.15);
+}
+
+.podium-block-number {
+    color: rgba(255, 255, 255, 0.25);
+    font-size: 32px;
+    font-weight: 900;
+}
+
+/* Action buttons */
+.winner-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.winner-btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+}
+
+.winner-btn-copy {
+    background: #312e2b;
+    color: whitesmoke;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.winner-btn-copy:hover {
+    background: #3d3a36;
+    color: #fff;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+    .winner-modal-content {
+        padding: 20px 14px 16px;
+    }
+
+    .winner-trophy-icon {
+        font-size: 44px;
+    }
+
+    .winner-title {
+        font-size: 20px;
+    }
+
+    .podium-medal {
+        font-size: 26px;
+    }
+
+    .podium-nick {
+        font-size: 11px;
+        max-width: 80px;
+    }
+
+    .podium-block.podium-1st { height: 80px; }
+    .podium-block.podium-2nd { height: 56px; }
+    .podium-block.podium-3rd { height: 40px; }
+
+    .winner-btn {
+        padding: 8px 14px;
+        font-size: 12px;
+    }
+}

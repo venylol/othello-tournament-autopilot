@@ -1,0 +1,16 @@
+{
+  "name": "onlicheck-map-collab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev public --d1 MAP_DB=map_collab_local --compatibility-date=2026-06-09",
+    "deploy": "wrangler pages deploy public --project-name onlicheck-map",
+    "d1:create": "wrangler d1 create onlicheck_map_collab",
+    "d1:migrate:local": "wrangler d1 migrations apply onlicheck_map_collab --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply onlicheck_map_collab --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.20.0"
+  }
+}

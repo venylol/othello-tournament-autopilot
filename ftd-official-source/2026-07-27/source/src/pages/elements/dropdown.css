@@ -1,0 +1,178 @@
+/* Styled Dropdown Component */
+.dropdown-container {
+    position: relative;
+    width: calc(80% + 15px);
+    min-width: 80%;
+    margin-top: 10px;
+}
+
+.dropdown-input {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 100%;
+    background-color: #312e2b;
+    height: 30px;
+    border: none;
+    color: white;
+    font-size: 14px;
+    border-radius: 0.45rem;
+    padding-left: 15px;
+    padding-right: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-sizing: border-box;
+}
+
+.dropdown-input:hover:not(.disabled) {
+    background-color: #3d3a36;
+}
+
+.dropdown-input.open {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    background-color: #3d3a36;
+}
+
+.dropdown-input.disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.dropdown-value {
+    flex: 1;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dropdown-arrow {
+    font-size: 10px;
+    color: #b4b3b2;
+    transition: transform 0.2s ease;
+    margin-left: 10px;
+}
+
+.dropdown-arrow.open {
+    transform: rotate(180deg);
+}
+
+.dropdown-styled {
+    position: relative;
+    min-width: 80%;
+    max-width: 80%;
+    margin-top: 2px;
+    z-index: 100;
+}
+
+.dropdown-options {
+    position: relative;
+    background-color: #312e2b;
+    border-radius: 0 0 0.45rem 0.45rem;
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    animation: dropdownFadeIn 0.15s ease;
+}
+
+@keyframes dropdownFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-5px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.dropdown-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 15px;
+    color: #d8d0d0;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-bottom: 1px solid #1f1e1b;
+}
+
+.dropdown-option:last-child {
+    border-bottom: none;
+    border-radius: 0 0 0.45rem 0.45rem;
+}
+
+.dropdown-option:hover {
+    background-color: #454240;
+    color: white;
+}
+
+.dropdown-option.selected {
+    background-color: #86a94b;
+    color: white;
+}
+
+.dropdown-option.selected:hover {
+    background-color: #96b95b;
+}
+
+.dropdown-option-text {
+    flex: 1;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.dropdown-checkmark {
+    color: white;
+    font-weight: bold;
+    margin-left: 10px;
+}
+
+/* Scrollbar styling for dropdown */
+.dropdown-options::-webkit-scrollbar {
+    width: 6px;
+}
+
+.dropdown-options::-webkit-scrollbar-track {
+    background: #1f1e1b;
+    border-radius: 3px;
+}
+
+.dropdown-options::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 3px;
+}
+
+.dropdown-options::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}
+
+/* For inline dropdowns (side by side) */
+.dropdown-inline {
+    display: flex;
+    gap: 10%;
+    min-width: calc(80% + 15px);
+    max-width: calc(80% + 15px);
+}
+
+.dropdown-inline .dropdown-container {
+    flex: 1;
+    min-width: unset;
+}
+
+/* Country dropdown specific */
+.dropdown-option-with-flag {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.dropdown-flag {
+    width: 20px;
+    height: 14px;
+    border-radius: 2px;
+}

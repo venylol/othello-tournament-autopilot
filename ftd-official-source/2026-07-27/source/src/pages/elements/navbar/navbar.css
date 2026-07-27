@@ -1,0 +1,198 @@
+.navbar {
+    background-color: #1f1e1b;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    max-width: 500px;
+    /* max-width: 2500px; */
+    height: 50px;
+    color:whitesmoke;
+    font-weight: 600;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    text-transform: capitalize;
+}
+
+.avatar-medium.nav {
+    margin-left: 2%;
+}
+
+.return-button.nav {
+    margin-left: calc(8px + 1%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+
+
+}
+
+.logo {
+    width: 150px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 0;
+    left: calc(50% - 75px);
+    height: 50px;
+}
+
+.nav-buttons {
+    width: 70px;
+    margin-right: 2%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+}
+
+.messages.nav {
+    display: block;
+    position: relative;
+    cursor: pointer;
+    width: 30px;
+    height: 30px;
+}
+
+.friends.nav {
+    width: 30px;
+    height: 30px;
+}
+
+.scroll  {
+    width: 35px;
+    height: 35px;
+    position: absolute;
+    bottom: 50px;
+    right: 30px;
+    background-color: #312e2b;  
+    border-radius: 50%;
+}
+
+.scroll:focus, .scroll:active {
+    background-color: #312e2b;
+}
+
+.footer {
+    background-color: #1f1e1b;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100vw;
+    max-width: 500px;
+    /* max-width: 2500px; */
+    height: 50px;
+    color:whitesmoke;
+    font-weight: 600;
+    font-size: 18px;
+    display: flex;
+    align-items: top;
+    justify-content: space-around;
+    z-index: 150;
+}
+
+.game-footer-container {
+    width: 34%;
+    position: relative;
+    display:flex;
+    justify-content: center;
+    z-index:140;
+    background-color: #1f1e1b;
+    /* outline: solid 1px #312e2b; */
+}
+
+.game-footer {
+    display: block;
+    position: relative;
+    margin-top: 3px;
+    /* margin-bottom: 3px; */
+    width: 45px;
+    height: 45px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    text-align: center;
+    z-index: 140;    
+}
+
+.game-footer.active {
+    border-bottom: solid whitesmoke 1px;
+}
+
+.game-footer svg {
+    width: 20px;
+    height: 20px;
+}
+
+.game-footer img {
+    height: 20px;
+}
+
+.game-footer.tables svg {
+    width: 30px;
+    height: 24px;
+    margin-top: -1px;
+}
+
+.game-footer.watch svg {
+    width: 35px;
+    height: 35px;
+    margin-top: -10px;
+}
+
+.game-footer.more svg {
+    width: 30px;
+    height: 30px;
+}
+
+.game-footer.analyze svg {
+    width: 25px;
+    height: 25px;
+}
+
+.game-footer.edit svg {
+    margin-left: 2px;
+}
+
+.game-footer-label {
+    min-width: 45px;
+    font-size: 11px;
+    color: #aca9a9;
+    line-height: 1;
+    font-weight: 300;
+    user-select: none;
+}
+
+.game-footer-label.active {
+    color: white;
+    font-weight: 500;
+}
+
+svg.back-arrow {
+    height: 20px;
+}
+
+div.new-logo {
+    text-overflow: ellipsis;
+    white-space: nowrap; 
+    overflow: hidden;
+    
+}
+span.new-logo {
+    text-overflow: ellipsis;
+    white-space: nowrap; 
+    overflow: hidden;
+    width: calc(100% - 155px); 
+    color: white;
+}
+
+
+
+

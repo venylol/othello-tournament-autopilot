@@ -1,0 +1,686 @@
+{
+    "source":  "https://www.flipthedisc.com",
+    "referencePage":  "https://www.flipthedisc.com/live/593",
+    "capturedAt":  "2026-07-27T10:38:10.2265082Z",
+    "scope":  "Publicly downloadable FTD frontend only; server/backend source is not exposed by the website.",
+    "build":  "/static/js/main.edac667a.js",
+    "downloadedFileCount":  110,
+    "downloadedBytes":  47028268,
+    "sourceMapCount":  40,
+    "sourceMapEntries":  367,
+    "extractedSourceFileCount":  299,
+    "missingSourcesContent":  0,
+    "conflicts":  [
+                      {
+                          "source":  "../webpack/bootstrap",
+                          "primary":  "webpack/bootstrap",
+                          "conflict":  "conflicts/main.edac667a.js/webpack/bootstrap"
+                      },
+                      {
+                          "source":  "../webpack/runtime/get javascript chunk filename",
+                          "primary":  "webpack/runtime/get javascript chunk filename",
+                          "conflict":  "conflicts/main.edac667a.js/webpack/runtime/get javascript chunk filename"
+                      },
+                      {
+                          "source":  "../webpack/runtime/get mini-css chunk filename",
+                          "primary":  "webpack/runtime/get mini-css chunk filename",
+                          "conflict":  "conflicts/main.edac667a.js/webpack/runtime/get mini-css chunk filename"
+                      }
+                  ],
+    "downloads":  [
+                      {
+                          "url":  "https://www.flipthedisc.com/asset-manifest.json",
+                          "path":  "public/asset-manifest.json",
+                          "bytes":  7433,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/favicon.ico",
+                          "path":  "public/favicon.ico",
+                          "bytes":  2809,
+                          "contentType":  "image/x-icon"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/index.html",
+                          "path":  "public/index.html",
+                          "bytes":  1952,
+                          "contentType":  "text/html; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/logo_192.png",
+                          "path":  "public/logo_192.png",
+                          "bytes":  19316,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/logo_512.png",
+                          "path":  "public/logo_512.png",
+                          "bytes":  37821,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/manifest.json",
+                          "path":  "public/manifest.json",
+                          "bytes":  774,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/robots.txt",
+                          "path":  "public/robots.txt",
+                          "bytes":  67,
+                          "contentType":  "text/plain; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/service-worker.js",
+                          "path":  "public/service-worker.js",
+                          "bytes":  3175,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/118.ee1f0ff4.chunk.css",
+                          "path":  "public/static/css/118.ee1f0ff4.chunk.css",
+                          "bytes":  4747,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/118.ee1f0ff4.chunk.css.map",
+                          "path":  "public/static/css/118.ee1f0ff4.chunk.css.map",
+                          "bytes":  9809,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/249.cb2946c8.chunk.css",
+                          "path":  "public/static/css/249.cb2946c8.chunk.css",
+                          "bytes":  27353,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/249.cb2946c8.chunk.css.map",
+                          "path":  "public/static/css/249.cb2946c8.chunk.css.map",
+                          "bytes":  55060,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/251.7362e143.chunk.css",
+                          "path":  "public/static/css/251.7362e143.chunk.css",
+                          "bytes":  2868,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/251.7362e143.chunk.css.map",
+                          "path":  "public/static/css/251.7362e143.chunk.css.map",
+                          "bytes":  5009,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/307.2f4d772c.chunk.css",
+                          "path":  "public/static/css/307.2f4d772c.chunk.css",
+                          "bytes":  10305,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/307.2f4d772c.chunk.css.map",
+                          "path":  "public/static/css/307.2f4d772c.chunk.css.map",
+                          "bytes":  17438,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/375.337c89cf.chunk.css",
+                          "path":  "public/static/css/375.337c89cf.chunk.css",
+                          "bytes":  31855,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/375.337c89cf.chunk.css.map",
+                          "path":  "public/static/css/375.337c89cf.chunk.css.map",
+                          "bytes":  65091,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/573.5ffcc0b8.chunk.css",
+                          "path":  "public/static/css/573.5ffcc0b8.chunk.css",
+                          "bytes":  22768,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/573.5ffcc0b8.chunk.css.map",
+                          "path":  "public/static/css/573.5ffcc0b8.chunk.css.map",
+                          "bytes":  45698,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/593.ee1f0ff4.chunk.css",
+                          "path":  "public/static/css/593.ee1f0ff4.chunk.css",
+                          "bytes":  4747,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/593.ee1f0ff4.chunk.css.map",
+                          "path":  "public/static/css/593.ee1f0ff4.chunk.css.map",
+                          "bytes":  9809,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/749.d36366a0.chunk.css",
+                          "path":  "public/static/css/749.d36366a0.chunk.css",
+                          "bytes":  6538,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/749.d36366a0.chunk.css.map",
+                          "path":  "public/static/css/749.d36366a0.chunk.css.map",
+                          "bytes":  13056,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/852.d36366a0.chunk.css",
+                          "path":  "public/static/css/852.d36366a0.chunk.css",
+                          "bytes":  6538,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/852.d36366a0.chunk.css.map",
+                          "path":  "public/static/css/852.d36366a0.chunk.css.map",
+                          "bytes":  13056,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/919.d36366a0.chunk.css",
+                          "path":  "public/static/css/919.d36366a0.chunk.css",
+                          "bytes":  6538,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/919.d36366a0.chunk.css.map",
+                          "path":  "public/static/css/919.d36366a0.chunk.css.map",
+                          "bytes":  13056,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/994.70e634ad.chunk.css",
+                          "path":  "public/static/css/994.70e634ad.chunk.css",
+                          "bytes":  17594,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/994.70e634ad.chunk.css.map",
+                          "path":  "public/static/css/994.70e634ad.chunk.css.map",
+                          "bytes":  35149,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/main.c6fa0a85.css",
+                          "path":  "public/static/css/main.c6fa0a85.css",
+                          "bytes":  85725,
+                          "contentType":  "text/css; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/css/main.c6fa0a85.css.map",
+                          "path":  "public/static/css/main.c6fa0a85.css.map",
+                          "bytes":  146092,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/118.b8ad31dd.chunk.js",
+                          "path":  "public/static/js/118.b8ad31dd.chunk.js",
+                          "bytes":  37018,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/118.b8ad31dd.chunk.js.map",
+                          "path":  "public/static/js/118.b8ad31dd.chunk.js.map",
+                          "bytes":  94999,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/173.4fd261ca.chunk.js",
+                          "path":  "public/static/js/173.4fd261ca.chunk.js",
+                          "bytes":  563,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/173.4fd261ca.chunk.js.map",
+                          "path":  "public/static/js/173.4fd261ca.chunk.js.map",
+                          "bytes":  1634,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/249.190c8f03.chunk.js",
+                          "path":  "public/static/js/249.190c8f03.chunk.js",
+                          "bytes":  27235,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/249.190c8f03.chunk.js.map",
+                          "path":  "public/static/js/249.190c8f03.chunk.js.map",
+                          "bytes":  69996,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/251.897dd329.chunk.js",
+                          "path":  "public/static/js/251.897dd329.chunk.js",
+                          "bytes":  14523,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/251.897dd329.chunk.js.map",
+                          "path":  "public/static/js/251.897dd329.chunk.js.map",
+                          "bytes":  41050,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/272.3aca0819.chunk.js",
+                          "path":  "public/static/js/272.3aca0819.chunk.js",
+                          "bytes":  51122,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/272.3aca0819.chunk.js.map",
+                          "path":  "public/static/js/272.3aca0819.chunk.js.map",
+                          "bytes":  143255,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/307.9be84e84.chunk.js",
+                          "path":  "public/static/js/307.9be84e84.chunk.js",
+                          "bytes":  86081,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/307.9be84e84.chunk.js.map",
+                          "path":  "public/static/js/307.9be84e84.chunk.js.map",
+                          "bytes":  276769,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/332.e334cde4.chunk.js",
+                          "path":  "public/static/js/332.e334cde4.chunk.js",
+                          "bytes":  71516,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/332.e334cde4.chunk.js.map",
+                          "path":  "public/static/js/332.e334cde4.chunk.js.map",
+                          "bytes":  140614,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/380.b2d127da.chunk.js",
+                          "path":  "public/static/js/380.b2d127da.chunk.js",
+                          "bytes":  6625,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/380.b2d127da.chunk.js.map",
+                          "path":  "public/static/js/380.b2d127da.chunk.js.map",
+                          "bytes":  21372,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/455.4eed30f6.chunk.js",
+                          "path":  "public/static/js/455.4eed30f6.chunk.js",
+                          "bytes":  11715,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/455.4eed30f6.chunk.js.map",
+                          "path":  "public/static/js/455.4eed30f6.chunk.js.map",
+                          "bytes":  44481,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/50.557448fb.chunk.js",
+                          "path":  "public/static/js/50.557448fb.chunk.js",
+                          "bytes":  86055,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/50.557448fb.chunk.js.map",
+                          "path":  "public/static/js/50.557448fb.chunk.js.map",
+                          "bytes":  272809,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/523.db19a2ea.chunk.js",
+                          "path":  "public/static/js/523.db19a2ea.chunk.js",
+                          "bytes":  15144,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/523.db19a2ea.chunk.js.map",
+                          "path":  "public/static/js/523.db19a2ea.chunk.js.map",
+                          "bytes":  39332,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/535.c59f78e5.chunk.js",
+                          "path":  "public/static/js/535.c59f78e5.chunk.js",
+                          "bytes":  80475,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/535.c59f78e5.chunk.js.map",
+                          "path":  "public/static/js/535.c59f78e5.chunk.js.map",
+                          "bytes":  233205,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/57.8606fbb5.chunk.js",
+                          "path":  "public/static/js/57.8606fbb5.chunk.js",
+                          "bytes":  42918,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/57.8606fbb5.chunk.js.map",
+                          "path":  "public/static/js/57.8606fbb5.chunk.js.map",
+                          "bytes":  35896,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/591.ab9b1678.chunk.js",
+                          "path":  "public/static/js/591.ab9b1678.chunk.js",
+                          "bytes":  11073,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/591.ab9b1678.chunk.js.map",
+                          "path":  "public/static/js/591.ab9b1678.chunk.js.map",
+                          "bytes":  38525,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/593.af26f719.chunk.js",
+                          "path":  "public/static/js/593.af26f719.chunk.js",
+                          "bytes":  6743,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/593.af26f719.chunk.js.map",
+                          "path":  "public/static/js/593.af26f719.chunk.js.map",
+                          "bytes":  15914,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/698.7ff91c49.chunk.js",
+                          "path":  "public/static/js/698.7ff91c49.chunk.js",
+                          "bytes":  16285,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/698.7ff91c49.chunk.js.map",
+                          "path":  "public/static/js/698.7ff91c49.chunk.js.map",
+                          "bytes":  55327,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/749.d27c1949.chunk.js",
+                          "path":  "public/static/js/749.d27c1949.chunk.js",
+                          "bytes":  4877,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/749.d27c1949.chunk.js.map",
+                          "path":  "public/static/js/749.d27c1949.chunk.js.map",
+                          "bytes":  9524,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/787.c4e7f8f9.chunk.js",
+                          "path":  "public/static/js/787.c4e7f8f9.chunk.js",
+                          "bytes":  4593,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/787.c4e7f8f9.chunk.js.map",
+                          "path":  "public/static/js/787.c4e7f8f9.chunk.js.map",
+                          "bytes":  10592,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/815.e61fe3d0.chunk.js",
+                          "path":  "public/static/js/815.e61fe3d0.chunk.js",
+                          "bytes":  54186,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/815.e61fe3d0.chunk.js.map",
+                          "path":  "public/static/js/815.e61fe3d0.chunk.js.map",
+                          "bytes":  176790,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/816.0ab5ae55.chunk.js",
+                          "path":  "public/static/js/816.0ab5ae55.chunk.js",
+                          "bytes":  47804,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/816.0ab5ae55.chunk.js.map",
+                          "path":  "public/static/js/816.0ab5ae55.chunk.js.map",
+                          "bytes":  157481,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/821.775acb3f.chunk.js",
+                          "path":  "public/static/js/821.775acb3f.chunk.js",
+                          "bytes":  11281,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/821.775acb3f.chunk.js.map",
+                          "path":  "public/static/js/821.775acb3f.chunk.js.map",
+                          "bytes":  87906,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/835.449c5992.chunk.js",
+                          "path":  "public/static/js/835.449c5992.chunk.js",
+                          "bytes":  12388,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/835.449c5992.chunk.js.map",
+                          "path":  "public/static/js/835.449c5992.chunk.js.map",
+                          "bytes":  37337,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/852.27ff4c17.chunk.js",
+                          "path":  "public/static/js/852.27ff4c17.chunk.js",
+                          "bytes":  8947,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/852.27ff4c17.chunk.js.map",
+                          "path":  "public/static/js/852.27ff4c17.chunk.js.map",
+                          "bytes":  17814,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/905.20530fd2.chunk.js",
+                          "path":  "public/static/js/905.20530fd2.chunk.js",
+                          "bytes":  25952,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/905.20530fd2.chunk.js.map",
+                          "path":  "public/static/js/905.20530fd2.chunk.js.map",
+                          "bytes":  106532,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/919.fd0cb069.chunk.js",
+                          "path":  "public/static/js/919.fd0cb069.chunk.js",
+                          "bytes":  3089,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/919.fd0cb069.chunk.js.map",
+                          "path":  "public/static/js/919.fd0cb069.chunk.js.map",
+                          "bytes":  6137,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/994.9268de9f.chunk.js",
+                          "path":  "public/static/js/994.9268de9f.chunk.js",
+                          "bytes":  31422,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/994.9268de9f.chunk.js.map",
+                          "path":  "public/static/js/994.9268de9f.chunk.js.map",
+                          "bytes":  97956,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/em-pthread.1de81181.chunk.js",
+                          "path":  "public/static/js/em-pthread.1de81181.chunk.js",
+                          "bytes":  64147,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/em-pthread.1de81181.chunk.js.map",
+                          "path":  "public/static/js/em-pthread.1de81181.chunk.js.map",
+                          "bytes":  182778,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/main.edac667a.js",
+                          "path":  "public/static/js/main.edac667a.js",
+                          "bytes":  250382,
+                          "contentType":  "application/javascript; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/js/main.edac667a.js.map",
+                          "path":  "public/static/js/main.edac667a.js.map",
+                          "bytes":  1064694,
+                          "contentType":  "application/json; charset=UTF-8"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/NotoColorEmoji.5a244e20455aab9c76f9.ttf",
+                          "path":  "public/static/media/NotoColorEmoji.5a244e20455aab9c76f9.ttf",
+                          "bytes":  9320,
+                          "contentType":  "font/ttf"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/applause.06d3b0c625caff3bb6da.mp3",
+                          "path":  "public/static/media/applause.06d3b0c625caff3bb6da.mp3",
+                          "bytes":  837590,
+                          "contentType":  "audio/mpeg"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/bullet.661bb52d7c9ce7f228b2.wav",
+                          "path":  "public/static/media/bullet.661bb52d7c9ce7f228b2.wav",
+                          "bytes":  96278,
+                          "contentType":  "audio/wav"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/ct.72efabed3f0d525a8e98.jpg",
+                          "path":  "public/static/media/ct.72efabed3f0d525a8e98.jpg",
+                          "bytes":  92854,
+                          "contentType":  "image/jpeg"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/cup_bronze.38b89ce2e5ebd27e4663.png",
+                          "path":  "public/static/media/cup_bronze.38b89ce2e5ebd27e4663.png",
+                          "bytes":  42577,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/cup_golden.4354bb1f2b234fc4d3af.png",
+                          "path":  "public/static/media/cup_golden.4354bb1f2b234fc4d3af.png",
+                          "bytes":  91398,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/cup_silver.6df73d0308e6727e4f3f.png",
+                          "path":  "public/static/media/cup_silver.6df73d0308e6727e4f3f.png",
+                          "bytes":  37591,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/david_wins.195a4ab152e6c9c44df4.wav",
+                          "path":  "public/static/media/david_wins.195a4ab152e6c9c44df4.wav",
+                          "bytes":  12238926,
+                          "contentType":  "audio/wav"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/move.9859323cdf5dd7c15ed6.wav",
+                          "path":  "public/static/media/move.9859323cdf5dd7c15ed6.wav",
+                          "bytes":  90190,
+                          "contentType":  "audio/wav"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/pattern_evaluator.4055b91a9d4b4f47e20c.dat",
+                          "path":  "public/static/media/pattern_evaluator.4055b91a9d4b4f47e20c.dat",
+                          "bytes":  22730220,
+                          "contentType":  "application/octet-stream"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/round_start.0545a26d5e1e481f51fb.wav",
+                          "path":  "public/static/media/round_start.0545a26d5e1e481f51fb.wav",
+                          "bytes":  532558,
+                          "contentType":  "audio/wav"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/scream.c173281a18efaab22de1.wav",
+                          "path":  "public/static/media/scream.c173281a18efaab22de1.wav",
+                          "bytes":  198236,
+                          "contentType":  "audio/wav"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/sensei_cli_main.0af61b9fb647acee0a68.wasm",
+                          "path":  "public/static/media/sensei_cli_main.0af61b9fb647acee0a68.wasm",
+                          "bytes":  3722013,
+                          "contentType":  "application/wasm"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/timer.144c0654eb1c95190227.wav",
+                          "path":  "public/static/media/timer.144c0654eb1c95190227.wav",
+                          "bytes":  311136,
+                          "contentType":  "audio/wav"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/withdraw.95ecc901045e29128427.wav",
+                          "path":  "public/static/media/withdraw.95ecc901045e29128427.wav",
+                          "bytes":  536654,
+                          "contentType":  "audio/wav"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/static/media/wof.e161b966c44caac71fdd.png",
+                          "path":  "public/static/media/wof.e161b966c44caac71fdd.png",
+                          "bytes":  53214,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/favicon.ico",
+                          "path":  "public/favicon.ico",
+                          "bytes":  2809,
+                          "contentType":  "image/x-icon"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/logo_120.png",
+                          "path":  "public/logo_120.png",
+                          "bytes":  17952,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/logo_180.png",
+                          "path":  "public/logo_180.png",
+                          "bytes":  33534,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/logo_192.png",
+                          "path":  "public/logo_192.png",
+                          "bytes":  19316,
+                          "contentType":  "image/png"
+                      },
+                      {
+                          "url":  "https://www.flipthedisc.com/logo_512.png",
+                          "path":  "public/logo_512.png",
+                          "bytes":  37821,
+                          "contentType":  "image/png"
+                      }
+                  ]
+}

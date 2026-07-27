@@ -1,0 +1,122 @@
+.auth-layout {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 90%;
+    height: 220px;
+    transform: translate(-50%, -50%);
+    background-color: #1f1e1b;
+    border-radius: 1.45rem;
+    color: white;
+}
+
+.auth-layout.reg {
+    height: 304px;
+    /* top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%); */
+}
+
+.card-title {
+    font-size: 20px;
+    font-weight: 600;
+    width: 100%;
+    text-align: center;
+    margin-top: 5px;
+}
+
+.card-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    height: fit-content;
+    width: 100%;
+}
+
+.login-input {
+    margin-top: 10px;
+    min-width: 80%;
+    background-color: #312e2b;
+    height: 30px;
+    border: none;
+    color: white;
+    font-size: 14px;
+    border-radius: 0.45rem;
+    padding-left: 15px;
+}
+
+.login-input:focus-within {
+    outline: none;
+    border-bottom: 1px solid red;
+    margin-bottom: -1px;
+}
+
+.login-input.valid:focus-within {
+    outline: none;
+    border-bottom: 1px solid green;
+    margin-bottom: -1px;
+}
+
+.login-input::placeholder {
+    color:#d8d0d0;
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  transition: all 5000s ease-in-out 0s;
+}
+
+.card-action-1 {
+    min-width: calc(80% + 17px);
+    margin-top: 15px;
+    height: 40px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.card-action-2 {
+    min-width: calc(80% + 17px);
+    margin-top: 10px;
+    height: 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.auth-btn {
+    background-color: #86a94b;
+    height: 40px;
+    min-width: 55px;
+    max-width: 50%;
+    width: 50%;
+    border-radius: 0.5rem;
+    font-weight: 700;
+}
+
+.auth-btn:disabled {
+    background-color: #312e2b;
+    color: #aca9a9;
+}
+
+span.register {
+    color: white;
+    font-weight: 500;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.card-content-message {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    height: fit-content;
+    gap: 10px;
+    width: 100%;
+}
+

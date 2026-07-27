@@ -1,0 +1,195 @@
+.notification-nav {
+    display: block;
+    width: 100%;
+    align-items: center;
+}
+
+.notification-nav > button {
+    background-color: #86a94b;
+    border-radius: 0.25rem;
+    margin-left: 5px;
+    width: fit-content;
+}
+
+.invitation-buttons {
+    display: flex;
+    justify-content: space-between;
+    max-width: 175px;
+    margin-left: 10px;
+    margin-top: 5px; 
+
+}
+.notification-button {
+    background-color: #86a94b;
+    border-radius: 0.25rem;
+    height: 25px;
+    width: fit-content;
+}
+
+.warning-nav > button {
+    background-color: #86a94b;
+    border-radius: 0.25rem;
+    margin-left: 5px;
+    width: fit-content;
+    display: block
+}
+
+span.invitation-nick {
+    padding-left: 8px;
+    font-weight: 600;
+    color: #b4b3b2;
+    line-height: 20px;
+}
+
+span.invitation-title {
+    font-weight: 400;
+    font-size: 12px;
+    color: white;
+    line-height: 20px;
+}
+
+span.invitation-title.split-top {
+    line-height: calc(var(--row-height) / 2);
+}
+
+.invitation-message {
+    padding-left: 8px;
+    font-weight: 400;
+    font-size: 14px;
+    color: white;
+    line-height: 20px;
+}
+
+.invitation-message.split-bottom {
+    line-height: calc(var(--row-height) / 2.5);
+    font-weight: 400;
+    color: #b4b3b2;
+    /* color: white; */
+}
+
+.notifications-container {
+    width: 98vw;
+    left: 1%;
+    max-width: 705.6px;
+    min-width: 300px;
+    position: absolute;
+    border-radius: 0.5rem;
+    top: 55px;
+    z-index: 1000;
+    background-color: #312e2b;
+    max-height: calc(100vh - 65px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.notifications-clear-all {
+    text-align: right;
+    padding: 6px 12px 2px 12px;
+    font-size: 11px;
+    color: #aca9a9;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.notifications-clear-all:hover {
+    color: #e0ddd5;
+    text-decoration: underline;
+}
+
+.notifications-empty {
+    text-align: center;
+    padding: 28px 12px;
+    font-size: 13px;
+    color: #aca9a9;
+}
+
+.notifications-list {
+    overflow-y: auto;
+    flex: 1;
+}
+
+.notification-row {
+    display: flex;
+    align-items: flex-start;
+    padding: 10px 12px;
+    gap: 10px;
+    border-bottom: 1px solid #3d3a36;
+}
+
+.notification-icon {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding-top: 2px;
+}
+
+.notification-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.notification-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.notification-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: #b4b3b2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+}
+
+.notification-rating {
+    font-size: 12px;
+    color: white;
+}
+
+.notification-msg {
+    font-size: 13px;
+    color: #e0ddd5;
+    margin-top: 2px;
+    word-break: break-word;
+}
+
+.notification-actions {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    min-width: 110px;
+}
+
+.notification-date {
+    line-height: calc(var(--row-height) / 4);
+    font-size: 10px;
+    color: #b4b3b2;
+
+}
+
+.notification-buttons {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.notification-button.remove {
+    background-color: #8b0100;
+}
+
+.tournament-name-ellipsis {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+

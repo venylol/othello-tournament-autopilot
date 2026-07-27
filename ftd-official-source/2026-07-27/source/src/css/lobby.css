@@ -1,0 +1,238 @@
+button {
+    background-color: transparent;
+    border: none;
+    outline: none;
+    color: white;
+    cursor: pointer;
+}
+
+.btn-new-game {
+    background-color: #86a94b;
+    font-weight: 700;
+    min-width: 150px;
+    min-height: 40px;
+    width: 100vw;
+    max-width: 500px;
+    position: fixed;
+    bottom: 50px;
+    border-radius: 0.25rem;
+    z-index: 5;
+}
+.btn-new-game:disabled {
+    background-color: #1f1e1b;
+    color:#d8d0d0; 
+}
+.btn-new-game:focus {
+    background-color: #86a94b;
+}
+
+.table-settings {
+    bottom: -227px;
+    position: fixed;
+    border-radius: 0.25rem 0.25rem 0  0;
+    transition: all .3s ease-out;
+    height: 203.6;
+    width: 100vw;
+    max-width: 500px;
+    background-color: #1f1e1b;
+    z-index: 1;
+}
+
+.btn-open-table {
+    background-color: #86a94b;
+    border-radius: 0.25rem;
+    border: none;
+    color: white;
+    font-weight: 700;
+    min-width: 150px;
+    min-height: 35px;
+    width: 100%;
+    position: relative;
+}
+
+.table-options {
+    display: grid;
+    
+}
+
+.btn-time-control {
+    display: flex;
+    justify-content: space-around;
+}
+
+button.time-control {
+    width: 10%;
+    height: 30px;
+    background-color: #312e2b;
+    border-radius: 0.25rem;
+}
+
+button.increment {
+    width: 20%;
+    height: 30px;
+    background-color: #312e2b;
+    border-radius: 0.25rem;
+}
+
+button.xot {
+    margin-top: 20px;
+    margin-bottom: 20px;
+    width: 20%;
+    height: 30px;
+    background-color: #312e2b;
+    border-radius: 0.25rem;
+}
+
+button.clicked {
+    background-color: #86a94b;
+}
+label.lbl-table-settings {
+    width: 100%;
+    text-align: center;
+    margin-top: 5px;
+    margin-bottom: 5px;
+    color: #aca9a9;
+}
+
+div.pictures-container.table {
+    width: 100%;
+}
+
+div.pictures-container {
+    width: calc(20% + 110px);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.flag-container {
+    margin-left: 8px;
+    margin-top: 4px;
+    width: 16px;
+    min-width: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.avatar-large {
+    margin-left: 5px;
+    width: 75px;
+    height: 86.5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.avatar-medium {
+    margin-left: 8px;
+    width: 30.34px;
+    min-width: 30.34px;
+    max-height: 35px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 0.5rem;
+}
+
+.avatar-small {
+    min-width: 20px;
+    width: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.small-text.ping {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+
+.toggle-button-contaner {
+    margin-top: 50px;
+}
+
+
+div.players-button-container {
+    min-width: 75px;
+    width: calc(78% - 185px);
+    height: calc(var(--row-heght) - 1px);
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    margin-right: 5px;
+}
+
+div.tables-button-container {
+    min-width: 50px;
+    /* width: calc(98vw - 326px); */
+    height: 49px;
+    height: calc(var(--row-heght) - 1);
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    margin-right: 5px;
+}
+
+div.tables-button-container button {
+    background-color: #86a94b;
+    width: 45px;
+    margin-left: 5px;
+    height: 50%;
+    border-radius: 0.25rem;
+}
+
+div.players-button-container button {
+    background-color: #86a94b;
+    /* width: calc(71vw - 175px - 25px); */
+    margin-left: 5px;
+    height: 50%;
+    border-radius: 0.25rem;
+}
+
+
+.table-info {
+    padding-left: 5px;
+    max-width: 250px;
+    width: 46vw;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    /* align-items: left; */
+}
+.table-info.watch {
+    width: 50vw;
+}
+
+.table-text.gametype {
+    max-width: 70px;
+    font-weight: 300;
+}
+
+.table-text.split-row {
+    line-height: calc(var(--row-height) / 2);
+    height: calc(var(--row-height) / 2);
+    width:100%;
+}
+
+.table-text.split-row.games-list {
+    display: flex;
+}
+
+/* .tables-button-container.watch button {
+    width: 50px;
+} */
+
+.table-text.games-list {
+    width: calc(100% - 50px);
+    line-height: calc(var(--row-height) / 2);
+    height: calc(var(--row-height) / 2);
+}
+.table-text.games-list.rating {
+    width: 65px;
+    line-height: calc(var(--row-height) / 2);
+    height: calc(var(--row-height) / 2);
+}
+

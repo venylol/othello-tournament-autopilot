@@ -1,0 +1,8 @@
+:root { color-scheme: light dark; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+body { margin: 0; min-width: 310px; background: #171b18; color: #eef4ee; }
+main { padding: 18px; }
+h1 { margin: 0 0 12px; font-size: 18px; }
+p { margin: 8px 0; overflow-wrap: anywhere; }
+#status { color: #9bd3a8; font-weight: 700; }
+button { width: 100%; margin: 14px 0; padding: 10px 12px; border: 0; border-radius: 18px; background: #a7d7af; color: #102114; font-weight: 700; cursor: pointer; }
+small { display: block; color: #c5cec7; line-height: 1.5; }

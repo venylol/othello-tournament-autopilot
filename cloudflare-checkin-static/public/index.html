@@ -1,0 +1,790 @@
+﻿<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="app-version" content="online-i18n.1" />
+    <!-- Match Material You surface tones (closer to Pixel OS) -->
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#F3F9F1"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#101611"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="比賽簽到助手" />
+    <meta name="application-name" content="比賽簽到助手" />
+    <title>比賽簽到助手（本地保存版）</title>
+
+    <link rel="manifest" href="./manifest.webmanifest?v=online-i18n.1" />
+    <link rel="icon" href="./icons/favicon-32.png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="./styles.css?v=online-i18n.1" />
+
+    <style>
+      @media (prefers-color-scheme: dark) {
+        .player-item--waiting {
+          background: color-mix(in srgb, #3a3117 88%, #1f2a22);
+          color: #f3ead0;
+          box-shadow: inset 3px 0 0 #d7a323;
+        }
+        .player-item--waiting .player-index {
+          color: #cab986;
+          opacity: 1;
+        }
+        .player-item--waiting .player-sub {
+          color: #d9ccb0;
+        }
+      }
+    </style>
+
+    <!-- 仅用于导出 PNG；即使加载失败，其他功能仍可用 -->
+    <script defer src="./vendor/html2canvas.min.js?v=online-i18n.1"></script>
+    <script defer src="./app.js?v=online-i18n.1"></script>
+    <script defer src="./checkin-i18n.js?v=online-i18n.1"></script>
+  </head>
+
+  <body>
+    <!-- Inline SVG sprite (Material Symbols Rounded-ish, no external font needed) -->
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <!-- Install / Add to Home -->
+      <symbol id="i-install" viewBox="0 0 24 24">
+        <path d="M12 3v10" />
+        <path d="M8.5 10.5L12 13.9l3.5-3.4" />
+        <path d="M5 20h14" />
+      </symbol>
+
+      <!-- Help -->
+      <symbol id="i-help" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.6 9.6a2.4 2.4 0 1 1 3.9 1.9c-.9.6-1.5 1.1-1.5 2.3" />
+        <path d="M12 17h.01" />
+      </symbol>
+
+      <!-- Delete / Reset -->
+      <symbol id="i-delete" viewBox="0 0 24 24">
+        <path d="M6 7h12" />
+        <path d="M9 7V5.5c0-.8.7-1.5 1.5-1.5h3c.8 0 1.5.7 1.5 1.5V7" />
+        <path
+          d="M8 7l.7 13.2c.04.9.78 1.8 1.8 1.8h3c1 0 1.76-.9 1.8-1.8L16 7"
+        />
+        <path d="M10.5 11v6" />
+        <path d="M13.5 11v6" />
+      </symbol>
+
+      <!-- Back -->
+      <symbol id="i-arrow-back" viewBox="0 0 24 24">
+        <path d="M10 6l-6 6 6 6" />
+        <path d="M4 12h16" />
+      </symbol>
+
+      <!-- Forward -->
+      <symbol id="i-arrow-forward" viewBox="0 0 24 24">
+        <path d="M14 6l6 6-6 6" />
+        <path d="M20 12H4" />
+      </symbol>
+
+      <!-- Done all -->
+      <symbol id="i-done-all" viewBox="0 0 24 24">
+        <path d="M7 13l2.2 2.2L13 11.4" />
+        <path d="M11 13l2.2 2.2L20 8.4" />
+      </symbol>
+
+      <!-- Add -->
+      <symbol id="i-add" viewBox="0 0 24 24">
+        <path d="M12 5v14" />
+        <path d="M5 12h14" />
+      </symbol>
+
+      <!-- Copy -->
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <path d="M9 9h10v10H9z" />
+        <path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1" />
+      </symbol>
+
+      <!-- Download -->
+      <symbol id="i-download" viewBox="0 0 24 24">
+        <path d="M12 3v10" />
+        <path d="M8.5 10.5L12 13.9l3.5-3.4" />
+        <path d="M5 20h14" />
+      </symbol>
+
+      <!-- Upload -->
+      <symbol id="i-upload" viewBox="0 0 24 24">
+        <path d="M12 21V11" />
+        <path d="M8.5 14.5L12 11.1l3.5 3.4" />
+        <path d="M5 4h14" />
+      </symbol>
+
+      <!-- Image -->
+      <symbol id="i-image" viewBox="0 0 24 24">
+        <path
+          d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v11A2.5 2.5 0 0 1 16.5 20h-9A2.5 2.5 0 0 1 5 17.5v-11z"
+        />
+        <path d="M8.5 11.5l2.2 2.6 2.8-3.1 4 5" />
+        <path d="M9 9h.01" />
+      </symbol>
+
+      <!-- Search -->
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="6" />
+        <path d="M20 20l-3.8-3.8" />
+      </symbol>
+
+      <!-- Close -->
+      <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="M6 6l12 12" />
+        <path d="M18 6L6 18" />
+      </symbol>
+
+      <!-- Expand more (chevron) -->
+      <symbol id="i-expand-more" viewBox="0 0 24 24">
+        <path d="M7 10l5 5 5-5" />
+      </symbol>
+
+      <!-- Edit -->
+      <symbol id="i-edit" viewBox="0 0 24 24">
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5z" />
+      </symbol>
+
+      <!-- Tune / Batch -->
+      <symbol id="i-tune" viewBox="0 0 24 24">
+        <path d="M4 7h9" />
+        <path d="M17 7h3" />
+        <circle cx="15" cy="7" r="2" />
+        <path d="M4 12h3" />
+        <path d="M11 12h9" />
+        <circle cx="9" cy="12" r="2" />
+        <path d="M4 17h9" />
+        <path d="M17 17h3" />
+        <circle cx="15" cy="17" r="2" />
+      </symbol>
+
+      <!-- Warning -->
+      <symbol id="i-warning" viewBox="0 0 24 24">
+        <path d="M12 3l10 18H2L12 3z" />
+        <path d="M12 9v4" />
+        <path d="M12 17h.01" />
+      </symbol>
+    </svg>
+
+    <div class="app">
+      <header class="top-bar" role="banner">
+        <div class="top-bar__inner">
+          <div class="top-bar__leading">
+            <div class="app-avatar" aria-hidden="true">
+              <img src="./icons/icon-192.png" alt="" />
+            </div>
+
+            <div class="top-bar__title">
+              <div class="headline">比赛签到助手</div>
+              <div class="subtitle" id="subtitle">
+                本地运行 · 自动保存 · 不上传数据
+              </div>
+            </div>
+          </div>
+
+          <div class="top-bar__actions">
+            <button
+              class="icon-btn icon-btn--accent"
+              id="btn-install"
+              type="button"
+              aria-label="安装/添加到主屏幕"
+              title="安装/添加到主屏幕"
+              hidden
+            >
+              <svg class="ms-icon" aria-hidden="true">
+                <use href="#i-install"></use>
+              </svg>
+            </button>
+
+            <button
+              class="icon-btn"
+              id="btn-help"
+              type="button"
+              aria-label="帮助与说明"
+              title="帮助与说明"
+            >
+              <svg class="ms-icon" aria-hidden="true">
+                <use href="#i-help"></use>
+              </svg>
+            </button>
+
+            <button
+              class="icon-btn"
+              id="btn-reset"
+              type="button"
+              aria-label="清除本地进度"
+              title="清除本地进度"
+            >
+              <svg class="ms-icon" aria-hidden="true">
+                <use href="#i-delete"></use>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Progress indicator -->
+      <div
+        class="progress-bar"
+        id="progress-bar"
+        role="progressbar"
+        aria-label="当前步骤"
+        aria-valuemin="1"
+        aria-valuemax="2"
+        aria-valuenow="1"
+      >
+        <div class="progress-bar__track">
+          <div class="progress-bar__fill" style="width: 50%"></div>
+        </div>
+        <div class="progress-bar__labels">
+          <span class="progress-bar__label progress-bar__label--active">导入数据</span>
+          <span class="progress-bar__label">现场签到</span>
+        </div>
+      </div>
+
+      <main class="container">
+        <!-- Step 1 -->
+        <section id="step-import" class="card">
+          <div class="card__header">
+            <div>
+              <h2 class="card__title">导入选手名单</h2>
+              <p class="card__support">
+                把名单粘贴进来即可开始。数据只保存在你的设备上（LocalStorage），Cloudflare
+                仅负责托管静态页面；若在微信/QQ等内置浏览器中使用，导出时建议优先“复制文本”。
+              </p>
+            </div>
+            <div class="step-chip" aria-label="步骤 1/2">步骤 1/2</div>
+          </div>
+
+          <div class="empty-state empty-state--compact" id="import-empty-state">
+            <svg class="empty-state__icon" aria-hidden="true">
+              <use href="#i-upload"></use>
+            </svg>
+            <div>
+              <div class="empty-state__title">粘贴名单后开始识别</div>
+              <div class="empty-state__text">
+                左侧可放长期名单，右侧可放报名接龙；两边任选其一即可导入。
+              </div>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="field">
+              <label for="club-members">长期俱乐部成员（每行一人）</label>
+              <textarea
+                id="club-members"
+                rows="10"
+                placeholder="例如：
+张三
+Li Si
+Wu Jianxiang"
+              ></textarea>
+              <div class="field__hint">
+                支持中英文、数字、括号内账号等；会自动去重并排序。
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="relay-info">比赛报名接龙信息</label>
+              <textarea
+                id="relay-info"
+                rows="10"
+                placeholder="请在此粘贴完整的接龙信息…"
+              ></textarea>
+              <div class="field__hint">
+                会自动过滤“接龙说明/规则/链接”等非选手行，支持 #接龙 / #接龍。
+              </div>
+            </div>
+          </div>
+
+          <details class="details" id="group-settings">
+            <summary class="details__summary">
+              <span>组别识别设置（可选）</span>
+              <span class="details__meta">支持新增组别关键词</span>
+            </summary>
+            <div class="details__body">
+              <div class="group-rules" id="group-rules"></div>
+
+              <div class="group-rules__actions">
+                <button
+                  class="btn btn-tonal"
+                  id="btn-add-group-rule"
+                  type="button"
+                >
+                  <svg class="btn__icon" aria-hidden="true">
+                    <use href="#i-add"></use>
+                  </svg>
+                  新增组别
+                </button>
+                <button
+                  class="btn btn-ghost"
+                  id="btn-reset-group-rules"
+                  type="button"
+                >
+                  恢复默认
+                </button>
+              </div>
+
+              <div class="field__hint">
+                每个组别可配置多个关键词（逗号/换行分隔）。导入时当某一行像标题且包含关键词（例如“【1月无差别组】…”），
+                程序会把其后的选手自动标记到该组别。
+              </div>
+            </div>
+          </details>
+
+          <div class="card__footer">
+            <button class="btn btn-tonal" id="btn-resume" type="button" hidden>
+              <svg class="btn__icon" aria-hidden="true">
+                <use href="#i-arrow-forward"></use>
+              </svg>
+              继续上次进度
+            </button>
+            <div class="spacer"></div>
+            <label class="btn btn-tonal file-btn" for="import-json-input">
+              <svg class="btn__icon" aria-hidden="true">
+                <use href="#i-upload"></use>
+              </svg>
+              导入进度
+            </label>
+            <button class="btn btn-filled" id="btn-import" type="button">
+              <svg class="btn__icon" aria-hidden="true">
+                <use href="#i-arrow-forward"></use>
+              </svg>
+              确认导入并开始签到
+            </button>
+          </div>
+        </section>
+
+        <!-- Step 2 -->
+        <section id="step-checkin" class="card hidden">
+          <div class="card__header">
+            <div>
+              <h2 class="card__title">选手签到</h2>
+              <p class="card__support" id="competition-title">—</p>
+            </div>
+            <div class="step-chip" aria-label="步骤 2/2">步骤 2/2</div>
+          </div>
+
+            <div class="controls">
+              <div class="field field--inline">
+                <label for="competition-name-input">比赛名称（可改）</label>
+                <input
+                  id="competition-name-input"
+                type="text"
+                placeholder="例如：XX杯黑白棋比赛"
+                />
+              </div>
+
+              <div class="top-action-row">
+                <button class="btn btn-tonal" id="btn-export-quick" type="button">
+                  <svg class="btn__icon" aria-hidden="true">
+                    <use href="#i-image"></use>
+                  </svg>
+                  设置 PNG 输出格式
+                </button>
+              </div>
+
+            <div class="stat-row" role="group" aria-label="统计">
+              <div class="stat">
+                <div class="stat__label">总人数</div>
+                <div class="stat__value" id="total-count">0</div>
+              </div>
+              <div class="stat">
+                <div class="stat__label">已签到</div>
+                <div class="stat__value stat__value--pos" id="checked-in-count">
+                  0
+                </div>
+              </div>
+              <div class="stat">
+                <div class="stat__label">等待中</div>
+                <div
+                  class="stat__value stat__value--neg"
+                  id="not-checked-in-count"
+                >
+                  0
+                </div>
+              </div>
+              <div class="stat stat--filtered" id="stat-filtered-container" hidden>
+                <div class="stat__label">当前显示</div>
+                <div class="stat__value" id="stat-filtered">0</div>
+              </div>
+            </div>
+
+            <div class="filters">
+              <div
+                class="segmented"
+                id="group-filter"
+                role="tablist"
+                aria-label="组别筛选"
+              >
+                <!-- JS 注入 -->
+              </div>
+
+              <div class="filter-actions">
+                <button
+                  class="chip-btn"
+                  id="btn-call-mode"
+                  type="button"
+                  aria-pressed="false"
+                  title="点名模式：只显示未签到，并放大按钮"
+                >
+                  点名模式
+                </button>
+                <button
+                  class="chip-btn"
+                  id="btn-show-time"
+                  type="button"
+                  aria-pressed="false"
+                  title="显示/隐藏签到时间"
+                >
+                  显示时间
+                </button>
+                <button
+                  class="chip-btn"
+                  id="btn-suspects"
+                  type="button"
+                  title="检查疑似重复/异常（仅供参考）"
+                >
+                  检查重复
+                </button>
+              </div>
+            </div>
+
+            <div class="ios-player-list-anchor" id="ios-player-list-anchor"></div>
+
+            <div class="toolbar">
+              <div class="field field--search">
+                <label class="sr-only" for="search-box">搜索选手</label>
+                <div class="input-wrap">
+                  <svg class="ms-icon input-icon" aria-hidden="true">
+                    <use href="#i-search"></use>
+                  </svg>
+                  <input
+                    id="search-box"
+                    type="search"
+                    placeholder="搜索选手名称…"
+                    autocomplete="off"
+                  />
+                  <button type="button" class="icon-btn field__clear" id="btn-clear-search" hidden aria-label="清除搜索">
+                    <svg class="ms-icon" aria-hidden="true">
+                      <use href="#i-close"></use>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <button class="btn btn-outlined" id="btn-back" type="button">
+                <svg class="btn__icon" aria-hidden="true">
+                  <use href="#i-arrow-back"></use>
+                </svg>
+                重新导入
+              </button>
+              <button class="btn btn-outlined" id="btn-batch" type="button">
+                <svg class="btn__icon" aria-hidden="true">
+                  <use href="#i-tune"></use>
+                </svg>
+                批量操作
+              </button>
+              <button class="btn btn-filled" id="btn-finish" type="button">
+                <svg class="btn__icon" aria-hidden="true">
+                  <use href="#i-done-all"></use>
+                </svg>
+                完成签到，进入比分登记辅助
+              </button>
+            </div>
+
+            <div class="add-row">
+              <input
+                id="add-player-name"
+                type="text"
+                placeholder="添加漏登/临时报名选手…"
+                autocomplete="off"
+              />
+              <button class="btn btn-tonal" id="btn-add" type="button">
+                <svg class="btn__icon" aria-hidden="true">
+                  <use href="#i-add"></use>
+                </svg>
+                添加
+              </button>
+            </div>
+
+            <div class="autosave-row">
+              <span class="chip" id="autosave-chip">
+                <span id="autosave-text">自动保存：已启用</span>
+                <span class="chip__time" id="autosave-time" hidden></span>
+              </span>
+              <span
+                class="chip sync-chip sync-chip--idle"
+                id="sync-chip"
+                title="本地服务同步状态"
+              >
+                本地同步：未连接
+              </span>
+              <div class="autosave-row__actions">
+                <button class="btn btn-text" id="btn-export-json" type="button">
+                  <svg class="btn__icon" aria-hidden="true">
+                    <use href="#i-download"></use>
+                  </svg>
+                  导出进度
+                </button>
+
+                <button
+                  class="btn btn-text"
+                  id="btn-import-json-paste"
+                  type="button"
+                >
+                  <svg class="btn__icon" aria-hidden="true">
+                    <use href="#i-copy"></use>
+                  </svg>
+                  粘贴导入
+                </button>
+
+                <label class="btn btn-text file-btn" for="import-json-input">
+                  <svg class="btn__icon" aria-hidden="true">
+                    <use href="#i-upload"></use>
+                  </svg>
+                  导入进度
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="list" id="player-list" aria-label="选手列表"></div>
+        </section>
+
+        <section id="step-score-helper" class="card hidden">
+          <div class="card__header">
+            <div>
+              <h2 class="card__title">比分登记辅助</h2>
+              <p class="card__support" id="score-helper-title">等待截图识别结果</p>
+            </div>
+            <div class="step-chip" aria-label="步骤 3/3">步骤 3/3</div>
+          </div>
+
+          <div class="score-helper">
+            <div class="score-helper__setup">
+              <label class="score-round-field" for="score-round-count">
+                <span class="score-round-field__label">总轮次</span>
+                <input
+                  id="score-round-count"
+                  type="number"
+                  min="1"
+                  max="9"
+                  step="1"
+                  inputmode="numeric"
+                  value="5"
+                />
+              </label>
+              <button class="btn btn-tonal" id="btn-score-apply-rounds" type="button">
+                应用
+              </button>
+              <button class="btn btn-outlined" id="btn-score-back-checkin" type="button">
+                返回签到
+              </button>
+            </div>
+
+            <div
+              class="segmented score-tabs"
+              id="score-round-tabs"
+              role="tablist"
+              aria-label="比分登记轮次"
+            ></div>
+
+            <div class="score-helper__summary" id="score-helper-summary"></div>
+
+            <div class="score-queue" id="score-pending-list"></div>
+            <div class="score-manual-pending">
+              <h3 class="score-manual-pending__title">手动 pending</h3>
+              <div id="score-manual-pending-list" class="score-manual-pending__list"></div>
+            </div>
+            <div class="score-completed">
+              <h3 class="score-completed__title">已登记</h3>
+              <div id="score-completed-list" class="score-completed__list"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <input
+        id="import-json-input"
+        type="file"
+        accept="application/json,.json"
+        hidden
+      />
+
+      <!-- 通用对话框 -->
+      <div
+        class="dialog-backdrop hidden"
+        id="dialog-backdrop"
+        role="presentation"
+      >
+        <div
+          class="dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dialog-title"
+        >
+          <div class="dialog__header">
+            <h3 class="dialog__title" id="dialog-title">提示</h3>
+          </div>
+          <div class="dialog__body" id="dialog-message"></div>
+          <div class="dialog__footer" id="dialog-buttons"></div>
+        </div>
+      </div>
+
+      <!-- 导出总表 -->
+      <div
+        class="dialog-backdrop hidden"
+        id="export-backdrop"
+        role="presentation"
+      >
+        <div
+          class="dialog dialog--large"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="export-dialog-title"
+        >
+          <div class="dialog__header">
+            <h3 class="dialog__title" id="export-dialog-title">签到总表预览</h3>
+          </div>
+          <div class="dialog__body">
+            <div class="export-settings" aria-label="导出设置">
+              <section class="export-section">
+                <h4 class="export-section__title">筛选范围</h4>
+                <div class="export-options export-options--range">
+                  <label class="field" for="export-group">
+                    <span class="field__label">组别</span>
+                    <select id="export-group" class="input"></select>
+                  </label>
+                  <label class="field" for="export-scope">
+                    <span class="field__label">签到状态</span>
+                    <select id="export-scope" class="input">
+                      <option value="all" selected>全部</option>
+                      <option value="checked">仅已签到</option>
+                      <option value="unchecked">仅未签到</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <section class="export-section">
+                <h4 class="export-section__title">排序方式</h4>
+                <label class="field" for="export-order">
+                  <span class="field__label">排序</span>
+                  <select id="export-order" class="input">
+                    <option value="list">按当前名单顺序</option>
+                    <option value="checkedFirst">已签到优先</option>
+                    <option value="uncheckedFirst" selected>未签到优先</option>
+                  </select>
+                </label>
+              </section>
+
+              <section class="export-section">
+                <h4 class="export-section__title">显示列</h4>
+                <div class="export-toggles" aria-label="导出列设置">
+                  <label class="toggle"
+                    ><input type="checkbox" id="export-with-group" />
+                    <span>组别列</span></label
+                  >
+                  <label class="toggle"
+                    ><input type="checkbox" id="export-with-platform" />
+                    <span>平台列</span></label
+                  >
+                  <label class="toggle"
+                    ><input type="checkbox" id="export-with-account" checked />
+                    <span>账号列</span></label
+                  >
+                  <label class="toggle"
+                    ><input type="checkbox" id="export-with-club" />
+                    <span>俱乐部列</span></label
+                  >
+                  <label class="toggle"
+                    ><input type="checkbox" id="export-with-time" checked />
+                    <span>签到时间列</span></label
+                  >
+                </div>
+              </section>
+            </div>
+
+            <div
+              class="export-inapp-tip hidden"
+              id="export-inapp-tip"
+              role="note"
+            >
+              <svg class="ms-icon" aria-hidden="true">
+                <use href="#i-warning"></use>
+              </svg>
+              <div class="export-inapp-tip__text">
+                <div class="export-inapp-tip__title">内置浏览器提示</div>
+                <div class="export-inapp-tip__sub">
+                  若在微信/QQ/微博等内置浏览器中“下载
+                  CSV/PNG”失败，建议使用“复制文本”，或右上角菜单选择“在浏览器打开”。
+                </div>
+              </div>
+            </div>
+
+            <div id="export-container" class="export-container">
+              <!-- JS 注入 -->
+            </div>
+          </div>
+
+          <div class="dialog__footer dialog__footer--wrap">
+            <button class="btn btn-text" id="btn-export-close" type="button">
+              <svg class="btn__icon" aria-hidden="true">
+                <use href="#i-arrow-back"></use>
+              </svg>
+              返回修改
+            </button>
+            <div class="spacer"></div>
+            <button class="btn btn-outlined" id="btn-copy" type="button">
+              <svg class="btn__icon" aria-hidden="true">
+                <use href="#i-copy"></use>
+              </svg>
+              复制文本
+            </button>
+            <button
+              class="btn btn-outlined"
+              id="btn-download-csv"
+              type="button"
+            >
+              <svg class="btn__icon" aria-hidden="true">
+                <use href="#i-download"></use>
+              </svg>
+              下载 CSV
+            </button>
+            <button class="btn btn-filled" id="btn-download-png" type="button">
+              <svg class="btn__icon" aria-hidden="true">
+                <use href="#i-image"></use>
+              </svg>
+              <span class="btn__label">下载 PNG</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Snackbar -->
+      <div class="snackbar" id="snackbar" aria-live="polite" aria-atomic="true">
+        <span class="snackbar__text"></span>
+        <button
+          class="snackbar__action"
+          id="snackbar-action"
+          type="button"
+          hidden
+        ></button>
+      </div>
+    </div>
+  </body>
+</html>

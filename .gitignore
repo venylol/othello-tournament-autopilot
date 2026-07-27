@@ -1,0 +1,66 @@
+# Credentials and private signing material
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+.env
+.env.*
+!.env.example
+**/config.json
+!**/config.example.json
+cloudflare-map-collab/map-collab.config.json
+wechat-decrypt/all_keys.json
+
+# Local repositories and dependency environments
+**/.git/
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.wrangler/
+*.pyc
+
+# Private WeChat databases, exports, images, and generated review artifacts
+wechat-decrypt/decrypted/
+wechat-decrypt/decoded_images/
+wechat-decrypt/decoded_voices/
+wechat-decrypt/agent_cache/
+wechat-decrypt/agent_outputs/
+wechat-decrypt/data/
+wechat-decrypt/export/
+wechat-decrypt/wxwork_decrypted/
+wechat-decrypt/wxwork_export/
+wechat-decrypt/round*_202*/
+wechat-decrypt/round*_no_cache_*/
+wechat-decrypt/round*_refresh_*/
+wechat-decrypt/round*_restart_*/
+wechat-decrypt/round*_retest_*/
+wechat-decrypt/*_export*.json
+wechat-decrypt/*_transcribed*.json
+wechat-decrypt/voice_transcriptions.json
+wechat-decrypt/ftd_player_name_overrides.json
+
+# Tournament runtime state, journals, score scans, and historical player/game data
+agent_cache/
+subagent_outputs/
+tournament_arrangement/recovered/data/
+tournament_arrangement/recovered/chrome-ftd-bridge.crx
+tournament_arrangement/historical_sample/
+tournament-metadata/exports/
+tournament-metadata/no-handicap/
+
+# Local databases and transient files
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+*.bak
+*.lnk
+Thumbs.db
+.DS_Store

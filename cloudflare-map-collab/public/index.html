@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FTD/OQ 映射表協作</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="page">
+      <section class="collab-head">
+        <div>
+          <h1 id="title">FTD/OQ 映射表</h1>
+          <p id="subtitle">載入中</p>
+        </div>
+        <div class="collab-actions">
+          <label class="collab-language" for="language-selector">
+            <span class="collab-language__label">語言</span>
+            <select class="collab-language__select" id="language-selector" aria-label="語言">
+              <option value="zh-Hant">繁中</option>
+              <option value="zh-Hans">简中</option>
+              <option value="en">EN</option>
+              <option value="ja">日本語</option>
+            </select>
+          </label>
+          <button class="score-card__btn" id="toggle-relay" type="button">查看報名接龍</button>
+          <button class="score-card__btn" id="export-png" type="button">匯出 PNG</button>
+          <button class="score-card__btn" id="download" type="button">下載 JSON</button>
+          <button class="score-card__btn" id="validate" type="button">校驗 OQ 帳號</button>
+          <span class="collab-save-state" id="save-state">已儲存</span>
+        </div>
+      </section>
+
+      <section class="collab-toolbar">
+        <div class="collab-chip" id="mode-chip">唯讀</div>
+        <div class="collab-chip" id="stats">-</div>
+        <button class="score-card__btn collab-clear-search" id="clear-search" type="button" hidden>清除</button>
+        <input class="collab-search" id="search" type="search" placeholder="搜尋姓名、帳號、群暱稱、狀態">
+      </section>
+
+      <section id="notice" class="notice" hidden></section>
+      <section id="relay-panel" class="relay-panel" hidden></section>
+      <section id="mapping" class="score-ftd-map"></section>
+    </main>
+    <script src="/i18n.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
