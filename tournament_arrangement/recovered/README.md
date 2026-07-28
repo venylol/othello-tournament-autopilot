@@ -83,10 +83,10 @@ node local-server.js
 当前版本仅作为本地页面使用，不要部署到 Cloudflare Pages。
 请使用 `node local-server.js` 和 `http://127.0.0.1:4174/` 进行本地验证。
 
-## Chrome FTD 本轮自律（opt-in）
+## Chrome FTD AP（opt-in）
 
-本地页面新增“FTD 只读探测 / 本轮自律 / 暂停 / 继续 / 紧急停止”。该模式通过固定 ID 的 Chrome Manifest V3 扩展直接读取已登录 FTD 标签页，并由 `local-server.js` 的持久协调器处理单个锁定轮次。它不搜索 Downloads、不调用微信或 `score-scan`，也不会结束、发布或推进 FTD 轮次。
+本地页面新增“FTD 只读探测 / AP / 暂停 / 继续 / 紧急停止”。该模式通过固定 ID 的 Chrome Manifest V3 扩展直接读取已登录 FTD 标签页，并由 `local-server.js` 的持久协调器处理单个锁定轮次。它不搜索 Downloads、不调用微信或 `score-scan`，也不会结束、发布或推进 FTD 轮次。
 
-现有“复制 FTD 导出代码”“复制 FTD 登分代码”“复制本轮棋谱导入代码”和手动 JSON 导入仍是默认兼容流程。自动化只有在比分与棋谱均经过 FTD 精确回读后，才允许把本地行自动标成绿色 `completed`。
+现有“复制 FTD 导出代码”“复制 FTD 登分代码”“复制本轮棋谱导入代码”和手动 JSON 导入仍是默认兼容流程。AP 导入配对后下载配对图，有效桌完成数达到一半（奇数向上取整）时下载半程比分图，全部完成并最终回读后下载最终比分图。自动化只有在比分与棋谱均经过 FTD 精确回读后，才允许把本地行自动标成绿色 `completed`。
 
 安装、只读探测、安全权限、操作和恢复说明见 [FTD_AUTOPILOT.md](./FTD_AUTOPILOT.md)。真实写入前必须先在 Chrome 中完成只读双 Socket 共存探测；当前代码和 mock 测试不能替代该现场验证。

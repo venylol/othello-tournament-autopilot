@@ -46,6 +46,12 @@ function makeState() {
     step: "score-helper",
     players: [],
     ui: { ftdUrl: "https://www.flipthedisc.com/live/593", oqPollSeconds: 5 },
+    ftdPlayerAccountMapping: {
+      accountIndex: {
+        black1: { ftdName: "Black 1", ftdId: "p0-1", account: "black_oq_1" },
+        white1: { ftdName: "White 1", ftdId: "p1-1", account: "white_oq_1" },
+      },
+    },
     scoreHelper: {
       version: 1,
       roundCount: 1,
@@ -65,6 +71,7 @@ function makeBridge(snapshot, behavior = {}) {
   const live = deepClone(snapshot);
   const calls = [];
   let renderCalls = 0;
+  const renderedFilenames = [];
   const bridge = {
     onRegister: null,
     status() {
@@ -131,9 +138,10 @@ function makeBridge(snapshot, behavior = {}) {
           readbackAttempts: 1, verifiedAt: new Date().toISOString(),
         };
       }
-      if (command.action === "renderVerifiedRoundImage") {
+      if (command.action === "renderPairingsImage" || command.action === "renderVerifiedRoundImage") {
         renderCalls += 1;
-        if (behavior.downloadFailure) { const error = new Error("download interrupted"); error.code = "chrome-download-failed"; throw error; }
+        renderedFilenames.push(command.filename);
+        if (behavior.downloadFailure && (!behavior.downloadFailureFilenameIncludes || command.filename.includes(behavior.downloadFailureFilenameIncludes))) { const error = new Error("download interrupted"); error.code = "chrome-download-failed"; throw error; }
         return { pngSha256: "png-hash", rowCount: command.snapshot.length, renderedAt: new Date().toISOString(), downloadReceipt: { downloadId: 41, state: "complete", filename: `C:\\Downloads\\${command.filename}`, bytesReceived: 1000 } };
       }
       throw new Error(`unexpected action ${command.action}`);
@@ -141,6 +149,7 @@ function makeBridge(snapshot, behavior = {}) {
     calls,
     live,
     get renderCalls() { return renderCalls; },
+    get renderedFilenames() { return [...renderedFilenames]; },
   };
   return bridge;
 }
@@ -148,6 +157,7 @@ function makeBridge(snapshot, behavior = {}) {
 function makeHarness(options = {}) {
   let state = makeState();
   let revision = 0;
+  let importConflictPending = options.importConflictOnce === true;
   const snapshot = options.snapshot || makeSnapshot(options.liveScores || [null, null, null]);
   const bridge = makeBridge(snapshot, options.bridgeBehavior || {});
   const expectedScores = [[0, 64], [64, 0], [32, 32]];
@@ -155,7 +165,15 @@ function makeHarness(options = {}) {
     dataDir: ".",
     persistFiles: false,
     readState: () => ({ state }),
-    writeState: (next) => { state = deepClone(next); revision += 1; return { state }; },
+    writeState: (next, source) => {
+      if (importConflictPending && source === "ftd-autopilot-import") {
+        importConflictPending = false;
+        const error = new Error("entity round changed");
+        error.code = "entity-conflict";
+        throw error;
+      }
+      state = deepClone(next); revision += 1; return { state };
+    },
     getRevision: () => revision,
     bridge,
     now: options.now,
@@ -195,9 +213,12 @@ async function run() {
   {
     const authorizedAt = Date.parse("2026-07-28T12:00:00+08:00");
     const harness = makeHarness({ now: () => authorizedAt, snapshot: makeSnapshot([null, null, null], { finished: true }) });
-    const started = await startAndRun(harness);
+    const started = await harness.coordinator.start({});
+    harness.getState().scoreHelper.activeRound = 7;
+    await harness.coordinator.run();
     assert.strictEqual(harness.coordinator.session.phase, "done", "explicit tournament 593 test authorization permits a finished round");
     assert.strictEqual(started.session.finishedRoundWriteTestAuthorization.tournamentId, "593");
+    assert.strictEqual(harness.getState().scoreHelper.activeRound, 7, "finished-round replay does not rewrite the shared active round");
     const writes = harness.bridge.calls.filter((command) => command.action === "writeScore" || command.action === "writeTranscript");
     assert.ok(writes.length > 0 && writes.every((command) => command.allowFinishedRoundWrite === true));
   }
@@ -209,6 +230,16 @@ async function run() {
     await harness.coordinator.run();
     assert.strictEqual(harness.coordinator.session.phase, "paused", "expired finished-round authorization stays blocked");
     assert.strictEqual(harness.coordinator.session.pauseReason.code, "ftd-round-finished");
+  }
+
+  {
+    const expiredAt = Date.parse("2026-07-29T00:00:00+08:00");
+    const harness = makeHarness({ now: () => expiredAt });
+    await harness.coordinator.start({});
+    harness.getState().scoreHelper.activeRound = 7;
+    await harness.coordinator.run();
+    assert.strictEqual(harness.coordinator.session.phase, "failed", "inactive locked rounds stay blocked outside the temporary replay authorization");
+    assert.strictEqual(harness.coordinator.session.failure.message, "selected local round changed");
   }
 
   {
@@ -233,6 +264,16 @@ async function run() {
   }
 
   {
+    const harness = makeHarness();
+    const started = await harness.coordinator.start({});
+    const claimed = harness.coordinator.claimControl(started.sessionId);
+    assert.notStrictEqual(claimed.token, started.token, "claim rotates the lost per-tab control token");
+    assert.throws(() => harness.coordinator.pause(started.sessionId, started.token), /token/);
+    const paused = harness.coordinator.pause(claimed.sessionId, claimed.token);
+    assert.strictEqual(paused.phase, "paused");
+  }
+
+  {
     const source = makeState();
     source.scoreHelper.rounds[0].ftdPairings = [{
       table: 1, black: "Black", white: "White", status: "completed", blackScore: 40, whiteScore: 24,
@@ -250,19 +291,36 @@ async function run() {
     assert.strictEqual(row.ftdScoreReceipt.sessionId, "session");
     assert.strictEqual(row.ftdTranscriptReceipt.sessionId, "session");
     assert.strictEqual(loaded.scoreHelper.rounds[0].ftdDirectImport.source, "chrome-ftd-bridge");
-    assert.ok(renderFtdPairingStatusMetadata(row).includes("本轮自律验证"));
+    assert.ok(renderFtdPairingStatusMetadata(row).includes("AP 验证"));
     assert.ok(renderFtdPairingStatusMetadata(row).includes("FTD已验证"));
   }
 
   const broker = new BridgeBroker({ now: () => 1000 });
-  assert.throws(() => broker.register({ bridgeId: "valid_bridge_123", tabId: -1, pageUrl: "https://www.flipthedisc.com/live/593", extensionId: "kbojmgkjbgokbbhlpkapiobfjnpacnme" }, "chrome-extension://kbojmgkjbgokbbhlpkapiobfjnpacnme"), /tabId rejected/);
+  assert.throws(() => broker.register({ bridgeId: "valid_bridge_123", tabId: -1, pageUrl: "https://www.flipthedisc.com/live/593", extensionId: "kbojmgkjbgokbbhlpkapiobfjnpacnme", bridgeVersion: "0.3.4" }, "chrome-extension://kbojmgkjbgokbbhlpkapiobfjnpacnme"), /tabId rejected/);
   assert.deepStrictEqual(safeJournalValue({ token: "secret", sid: "secret", cookie: "secret", nested: { authorization: "secret", gameId: "ok" } }), { nested: { gameId: "ok" } });
 
   {
     const harness = makeHarness();
     const started = await startAndRun(harness);
     assert.strictEqual(harness.coordinator.session.phase, "done");
-    assert.strictEqual(harness.bridge.renderCalls, 1, "exactly one download command");
+    assert.strictEqual(harness.bridge.renderCalls, 3, "pairing, halfway, and final PNG each download once");
+    assert.deepStrictEqual(harness.bridge.renderedFilenames, [
+      "ftd-593-round-01-pairings.png",
+      "ftd-593-round-01-scores-halfway-verified.png",
+      "ftd-593-round-01-scores-verified.png",
+    ]);
+    const pairingCommand = harness.bridge.calls.find((call) => call.action === "renderPairingsImage");
+    const halfwayCommand = harness.bridge.calls.find((call) => call.filename === "ftd-593-round-01-scores-halfway-verified.png");
+    assert.strictEqual(pairingCommand.snapshot[0].blackAccount, "black_oq_1");
+    assert.strictEqual(pairingCommand.snapshot[0].whiteAccount, "white_oq_1");
+    assert.strictEqual(pairingCommand.snapshot[0].password, "0101");
+    assert.strictEqual(halfwayCommand.snapshot.length, 3, "halfway PNG keeps the complete pairing table");
+    assert.strictEqual(halfwayCommand.snapshot.filter((row) => row.verified).length, 2, "three active tables use ceil(3/2) as the halfway threshold");
+    assert.deepStrictEqual(
+      halfwayCommand.snapshot.filter((row) => !row.verified).map((row) => [row.blackScore, row.whiteScore]),
+      [[null, null]],
+      "unfinished halfway rows stay blank in the original score-export layout",
+    );
     const rows = harness.getState().scoreHelper.rounds[0].ftdPairings;
     assert.deepStrictEqual(rows.map((row) => [row.blackScore, row.whiteScore]), [[0, 64], [64, 0], [32, 32]]);
     rows.forEach((row) => {
@@ -274,6 +332,13 @@ async function run() {
       assert.ok(row.oqAutoAudit, "OQ provenance retained");
     });
     assert.ok(harness.coordinator.memoryJournal.every((entry) => !JSON.stringify(entry).includes(started.token)), "control token absent from journal");
+  }
+
+  {
+    const harness = makeHarness({ importConflictOnce: true });
+    await startAndRun(harness);
+    assert.strictEqual(harness.coordinator.session.phase, "done", "one concurrent round-entity refresh is rebased and retried");
+    assert.strictEqual(harness.coordinator.memoryJournal.filter((entry) => entry.event === "round-import-conflict-retry").length, 1);
   }
 
   {
@@ -396,7 +461,8 @@ async function run() {
     } });
     await startAndRun(harness);
     assert.strictEqual(finalReadback, true);
-    assert.strictEqual(harness.bridge.renderCalls, 0, "image is never generated from mismatching/unverified final readback");
+    assert.strictEqual(harness.bridge.renderCalls, 2, "pairing and halfway images remain, but no final image is generated from mismatching readback");
+    assert.ok(!harness.bridge.renderedFilenames.some((filename) => filename.endsWith("-scores-verified.png")));
     assert.strictEqual(harness.coordinator.session.phase, "failed");
   }
 

@@ -808,6 +808,72 @@ class OqAutoScoreUpdateTests(unittest.TestCase):
         self.assertTrue(pending)
         self.assertEqual(pending[0]["pendingKind"], "oq-auto-multiple-games")
 
+    def test_resolved_multiple_game_candidates_are_not_recreated_by_repeated_poll(self):
+        games = [
+            FakeGame("g1", "2026-06-08T12:05:00Z", "black_user", "white_user", 36, 22),
+            FakeGame("g2", "2026-06-08T12:15:00Z", "black_user", "white_user", 10, 54),
+        ]
+        fetch_result = {
+            "accounts": ["black_user", "white_user"],
+            "gamesByAccount": {"blackuser": games, "whiteuser": games},
+            "errors": {},
+            "wallMs": 1,
+        }
+        with mock.patch.object(helper, "fetch_oq_games_for_accounts", return_value=fetch_result):
+            state = make_state()
+            first = helper.update_round_oq_scores(
+                state,
+                1,
+                1,
+                helper.parse_local_time_required("2026-06-08 20:00", "start"),
+                40,
+                "5min",
+                8,
+                "http://example.invalid",
+                1,
+                True,
+                False,
+            )
+            target_round = state["scoreHelper"]["rounds"][0]
+            resolved = target_round["pending"][0]
+            candidate_keys = [
+                item["candidateKey"]
+                for item in resolved["oqPendingDetail"]["candidates"]
+            ]
+            resolved.update({
+                "resolutionStatus": "resolved",
+                "resolvedByReferee": True,
+                "selectedSourceKey": f"oq-auto:{candidate_keys[0]}",
+            })
+            row = target_round["ftdPairings"][0]
+            row.update({
+                "status": "ready",
+                "blackScore": 36,
+                "whiteScore": 28,
+                "sourceMessageKey": f"oq-auto:{candidate_keys[0]}",
+                "resultSource": "oq-auto",
+                "lastEditedBy": "user",
+            })
+            second = helper.update_round_oq_scores(
+                state,
+                1,
+                1,
+                helper.parse_local_time_required("2026-06-08 20:00", "start"),
+                40,
+                "5min",
+                8,
+                "http://example.invalid",
+                1,
+                True,
+                False,
+            )
+        self.assertEqual(first["pendingCount"], 1)
+        self.assertEqual(second["pendingCount"], 0)
+        self.assertEqual(len(target_round["pending"]), 1)
+        self.assertEqual(target_round["pending"][0]["resolutionStatus"], "resolved")
+        self.assertEqual(row["sourceMessageKey"], f"oq-auto:{candidate_keys[0]}")
+        self.assertEqual(row["lastEditedBy"], "user")
+
     def test_oq_followup_pending_when_agent_ready_score_mismatches_single_game(self):
         game = FakeGame("g2", "2026-06-08T12:15:00Z", "black_user", "white_user", 10, 54)
         game.raw_metadata_json = helper.json.dumps({"detail": detail_with_terminal(12, "LOSE:RESIGN")})

@@ -20,6 +20,13 @@ function run() {
   const page = read("page-bridge.js");
   const relay = read("content-relay.js");
   const worker = read("service-worker.js");
+  const pairingRenderer = read("ftd-pairing-png-renderer.js");
+  const scoreRenderer = read("ftd-score-png-renderer.js");
+  const mainScripts = manifest.content_scripts.find((entry) => entry.world === "MAIN").js;
+  assert.deepStrictEqual(mainScripts.slice(-3), ["ftd-pairing-png-renderer.js", "ftd-score-png-renderer.js", "page-bridge.js"]);
+  assert.ok(page.includes("window.FTD_PAIRING_PNG_RENDERER"));
+  assert.ok(page.includes("window.FTD_SCORE_PNG_RENDERER"));
+  assert.ok(!page.includes('createElement("canvas")'), "AP must not contain a separate PNG canvas implementation");
   assert.ok(page.includes('forceNew: true'));
   assert.ok(page.includes('assertWriteTransportProof(command)'));
   assert.ok(page.includes('FINISHED_ROUND_TEST_TOURNAMENT_ID = "593"'));
@@ -48,6 +55,8 @@ function run() {
 
   const index = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
+  const pairingConsole = fs.readFileSync(path.join(root, "ftd-download-console.js"), "utf8");
+  const scoreConsole = fs.readFileSync(path.join(root, "ftd-score-console.js"), "utf8");
   for (const label of ["复制 FTD 导出代码", "复制 FTD 登分代码", "复制本轮棋谱导入代码", "导入本轮 JSON"]) {
     assert.ok(index.includes(label), `manual workflow retained: ${label}`);
   }
@@ -55,6 +64,29 @@ function run() {
     assert.ok(app.includes(`function ${functionName}`), `manual implementation retained: ${functionName}`);
   }
   assert.ok(app.includes("runManualFtdAction"), "active automation warns and pauses before manual flow");
+  assert.ok(app.includes("ftd-pairing-png-renderer.js") && app.includes("ftd-score-png-renderer.js"));
+  assert.ok(pairingConsole.includes("__FTD_PAIRING_PNG_RENDERER_SOURCE__"));
+  assert.ok(scoreConsole.includes("__FTD_SCORE_PNG_RENDERER_SOURCE__"));
+  assert.ok(!pairingConsole.includes("function buildPairingsCanvas"), "manual pairing export must use the shared renderer");
+  assert.ok(!scoreConsole.includes("function buildPairingsCanvas"), "manual score export must use the shared renderer");
+  assert.ok(pairingRenderer.includes("function buildPairingsCanvas"));
+  assert.ok(scoreRenderer.includes("function buildPairingsCanvas"));
+
+  const generatedPairingConsole = pairingConsole
+    .replace("__FTD_PAIRING_PNG_RENDERER_SOURCE__", pairingRenderer)
+    .replace("__FTD_TARGET_ROUND__", "1")
+    .replace("__FTD_TARGET_STAGE__", '"preliminary"')
+    .replace("__FTD_TOURNAMENT_URL__", '"https://flipthedisc.com/live/593"')
+    .replace("__FTD_PLAYER_ACCOUNT_MAPPING__", "{}");
+  const generatedScoreConsole = scoreConsole
+    .replace("__FTD_SCORE_PNG_RENDERER_SOURCE__", scoreRenderer)
+    .replace("__FTD_SCORE_TOURNAMENT_ID__", '"593"')
+    .replace("__FTD_SCORE_ROUND__", "1")
+    .replace("__FTD_SCORE_RESULTS__", "[]")
+    .replace("__FTD_SCORE_PAIRINGS_ASSIGN__", "LOCAL_PAIRINGS = [];")
+    .replace("__FTD_SCORE_DOWNLOAD_PNG__", "true");
+  assert.doesNotThrow(() => new Function(generatedPairingConsole));
+  assert.doesNotThrow(() => new Function(generatedScoreConsole));
   assert.ok(!page.includes("score-scan") && !worker.includes("score-scan"));
   assert.ok(!page.includes("wechat") && !worker.includes("wechat"));
 

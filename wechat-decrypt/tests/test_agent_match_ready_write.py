@@ -112,10 +112,15 @@ class ReadyWriteTests(unittest.TestCase):
 
     def test_last_prelim_next_stage_uses_semifinal_keywords_only(self):
         score_helper = {
-            "roundCount": 6,
+            "preliminaryRoundCount": 6,
+            "roundCount": 8,
             "rounds": [
-                {"round": index, "ftdPairings": [{"table": 1}, {"table": 2}]}
-                for index in range(1, 7)
+                {
+                    "round": index,
+                    "stage": "preliminary" if index <= 6 else "semifinal" if index == 7 else "finals",
+                    "ftdPairings": [{"table": 1}, {"table": 2}] if index <= 6 else [],
+                }
+                for index in range(1, 9)
             ],
         }
 
@@ -131,10 +136,15 @@ class ReadyWriteTests(unittest.TestCase):
 
     def test_last_prelim_stop_hint_detects_semifinal_boundary_not_final(self):
         score_helper = {
-            "roundCount": 6,
+            "preliminaryRoundCount": 6,
+            "roundCount": 8,
             "rounds": [
-                {"round": index, "ftdPairings": [{"table": 1}, {"table": 2}]}
-                for index in range(1, 7)
+                {
+                    "round": index,
+                    "stage": "preliminary" if index <= 6 else "semifinal" if index == 7 else "finals",
+                    "ftdPairings": [{"table": 1}, {"table": 2}] if index <= 6 else [],
+                }
+                for index in range(1, 9)
             ],
         }
 

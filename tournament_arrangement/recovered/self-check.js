@@ -404,7 +404,7 @@ async function checkEnvironment(check) {
     check.fail("environment", "/api/state is readable", {
       actual: FRONTEND_API,
       reason: apiState.error || `HTTP ${apiState.status}`,
-      suggestion: "Fix local-server.js before starting check-in; agent writes must go through /api/state.",
+      suggestion: "Fix local-server.js before starting check-in; agent writes must go through /api/state/commands.",
     });
   }
 

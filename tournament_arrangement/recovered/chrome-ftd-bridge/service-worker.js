@@ -2,6 +2,7 @@
 
 const LOCAL_ROOT = "http://127.0.0.1:4174";
 const EXPECTED_EXTENSION_ID = "kbojmgkjbgokbbhlpkapiobfjnpacnme";
+const BRIDGE_VERSION = "0.3.4";
 let activePort = null;
 let activeTabId = null;
 let bridgeId = crypto.randomUUID();
@@ -30,7 +31,7 @@ async function registerBridge() {
   try {
     const response = await localFetch("/api/automation/bridge/register", {
       method: "POST",
-      body: JSON.stringify({ bridgeId, tabId: activeTabId, pageUrl, extensionId: chrome.runtime.id }),
+      body: JSON.stringify({ bridgeId, tabId: activeTabId, pageUrl, extensionId: chrome.runtime.id, bridgeVersion: BRIDGE_VERSION }),
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
@@ -169,7 +170,7 @@ function waitForDownload(downloadId, timeoutMs = 120000) {
 
 async function downloadRenderedPng(result) {
   if (!result || typeof result.dataUrl !== "string" || !result.dataUrl.startsWith("data:image/png;base64,")) throw new Error("bridge 未返回 PNG data URL");
-  if (!/^ftd-[A-Za-z0-9_.-]+-scores-verified\.png$/.test(result.filename || "")) throw new Error("bridge PNG 文件名无效");
+  if (!/^ftd-[A-Za-z0-9_.-]+-(?:pairings|scores-(?:halfway-verified|verified))\.png$/.test(result.filename || "")) throw new Error("bridge PNG 文件名无效");
   const downloadId = await chrome.downloads.download({ url: result.dataUrl, filename: result.filename, conflictAction: "uniquify", saveAs: false });
   const receipt = await waitForDownload(downloadId);
   return { ...result, dataUrl: undefined, downloadReceipt: receipt };

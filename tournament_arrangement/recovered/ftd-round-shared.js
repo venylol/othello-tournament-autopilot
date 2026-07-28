@@ -169,7 +169,8 @@
     const localStage = text(scope && scope.localStage);
     const tournamentId = text(scope && scope.tournamentId);
     if (!STAGES.has(localStage) || !tournamentId || localRound < 1 || localRound > helper.rounds.length) throw new Error("invalid locked local scope");
-    if (Math.trunc(Number(helper.activeRound)) !== localRound) throw new Error("selected local round changed");
+    const allowInactiveLockedRound = Boolean(options && options.allowInactiveLockedRound);
+    if (!allowInactiveLockedRound && Math.trunc(Number(helper.activeRound)) !== localRound) throw new Error("selected local round changed");
     const round = helper.rounds[localRound - 1];
     if (text(round && round.stage) !== localStage) throw new Error("selected local stage changed");
     const definitions = Array.isArray(scope.definitions) ? scope.definitions : [];

@@ -883,7 +883,12 @@ def update_state_summary(
             "book": str(args.book or "enabled-default"),
         },
     }
-    atomic_write_json(state_path, state)
+    if bool(getattr(args, "direct_file", False)):
+        if state_path.resolve() == DEFAULT_STATE_PATH.resolve():
+            raise RuntimeError("--direct-file is fixture/test-only and cannot write the live shared state")
+        atomic_write_json(state_path, state)
+    else:
+        match_helper.write_frontend_state(state_path, state, False)
 
 
 def has_prelim_pairings(state: dict[str, Any], round_limit: int) -> bool:
@@ -948,7 +953,7 @@ def open_persistent_engine(args: argparse.Namespace, cache_dir: Path) -> Persist
 def run_once(args: argparse.Namespace) -> dict[str, Any]:
     state_path = Path(args.state)
     cache_dir = Path(args.cache_dir)
-    state = read_json(state_path)
+    state = read_json(state_path) if bool(getattr(args, "direct_file", False)) else match_helper.read_frontend_state(state_path, False)
     if not has_prelim_pairings(state, int(args.round_limit)):
         return {"ok": True, "status": "waiting-no-prelim-pairings", "analyzed": 0}
 
@@ -1042,7 +1047,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_status(args: argparse.Namespace) -> dict[str, Any]:
-    state = read_json(Path(args.state))
+    state = read_json(Path(args.state)) if bool(getattr(args, "direct_file", False)) else match_helper.read_frontend_state(Path(args.state), False)
     if not has_prelim_pairings(state, int(args.round_limit)):
         return {"ok": True, "status": "waiting-no-prelim-pairings", "taskCount": 0, "pendingCount": 0}
     tasks = collect_prelim_tasks(state, int(args.round_limit), args.oq_base_url, int(args.oq_timeout))
@@ -1217,6 +1222,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("status", "once", "watch"):
         p = sub.add_parser(name)
         p.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+        p.add_argument("--direct-file", action="store_true", help="Test/fixture mode only; bypasses the sole-writer server")
         p.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
         p.add_argument("--engine", default=str(DEFAULT_ENGINE_EXE))
         p.add_argument("--level", type=int, default=22)

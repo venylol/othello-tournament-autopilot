@@ -16,7 +16,7 @@ mandatory flow is:
    deterministic addition, it must still run `patch-ftd-map
    --no-changes-reviewed`.
 3. `validate-and-publish-ftd-map` performs the single required OQ validation
-   pass, writes the validated table through `/api/state`, publishes the whole
+   pass, writes affected mapping entities through `/api/state/commands`, publishes the whole
    table plus group-nickname candidates online, and verifies remote statistics.
 
 During agent review, WeChat group nicknames usually put the player's name on
@@ -59,17 +59,20 @@ competition-stage instruction.
 
 ## Opt-in Chrome FTD Round Autopilot
 
-The local score-helper also has an explicit `本轮自律` mode documented in
+The local score-helper also has an explicit `AP` mode documented in
 `tournament_arrangement/recovered/FTD_AUTOPILOT.md`. It is not the default
 competition-day workflow. The referee must select and start it for one exact
 local round/stage. If a valid `roundStartAt` is already applied, preserve and
-use it. If it is absent or invalid at startup, set it once to the `本轮自律`
+use it. If it is absent or invalid at startup, set it once to the `AP`
 start instant. That click authorizes only that locked round's score and
 transcript writes.
 
 - It uses the fixed-ID Chrome MV3 bridge and the persistent local coordinator.
   It imports the selected FTD round directly through the authenticated page
-  bridge and must not search or watch Downloads for round JSON.
+  bridge and must not search or watch Downloads for round JSON. After import it
+  downloads one pairing PNG; after `ceil(non-BYE tables / 2)` score receipts it
+  downloads one halfway score PNG; after final readback it downloads one final
+  score PNG. Each milestone is requested at most once per session.
 - A real read-only probe must first prove login, TD access, and coexistence of
   the FTD page socket with the dedicated bridge socket. Until that succeeds,
   FTD score/transcript writes remain disabled.
@@ -87,8 +90,8 @@ transcript writes.
 - Pause prevents new commands; resume revalidates the locked scope. Emergency
   stop prevents new external writes, waits for an in-flight command to settle,
   and never rolls back verified writes. Completion additionally requires every
-  applicable transcript readback, final FTD readback, exactly one verified
-  round/stage PNG, and Chrome confirmation that its download completed.
+  applicable transcript readback, final FTD readback, and Chrome completion
+  receipts for the pairing, halfway-score, and final-score PNG downloads.
 
 ## Prompt Notes
 
@@ -453,15 +456,16 @@ transcript writes.
      sub-action and report it to the user immediately. Do not silently guess,
      auto-correct, or resolve data conflicts without surfacing them.
    - When the local sync server is available, agent-side roster/check-in
-     changes must be written through `http://127.0.0.1:4174/api/state` instead
-     of direct file writes. This lets the server broadcast the revision to the
+     changes must be written as entity commands through
+     `http://127.0.0.1:4174/api/state/commands` instead of direct file writes or
+     full-state POSTs. This lets the server broadcast the revision to the
      frontend and avoids browser cached state overwriting agent edits. If the
-     API is unavailable, stop and report the local sync problem before writing
-     the shared JSON directly.
-   - If a direct shared JSON write is explicitly required, write UTF-8 without
-     BOM. PowerShell `Set-Content -Encoding UTF8` may produce a BOM in older
-     shells and can break strict JSON parsing; prefer the local sync API or a
-     no-BOM writer.
+     API is unavailable, stop and report the local sync problem; do not write
+     the live shared JSON directly.
+   - Fixture/test-only direct JSON writes must use UTF-8 without BOM.
+     PowerShell `Set-Content -Encoding UTF8` may produce a BOM in older shells
+     and can break strict JSON parsing; prefer the command API or a no-BOM
+     writer.
    - Preferred tournament-day agent entrypoint:
      `C:\Users\MeroAF\Desktop\比赛编排\wechat-decrypt\agent_tournament_helper.cmd`.
      Use it for common operations so the agent does not switch between separate

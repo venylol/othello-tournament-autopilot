@@ -15,9 +15,10 @@ const ACTIVE_PHASES = new Set([
 ]);
 const BRIDGE_ACTIONS = new Set([
   "probe", "readRound", "writeScore", "writeTranscript", "readbackRound",
-  "renderVerifiedRoundImage",
+  "renderPairingsImage", "renderVerifiedRoundImage",
 ]);
 const EXPECTED_EXTENSION_ID = "kbojmgkjbgokbbhlpkapiobfjnpacnme";
+const EXPECTED_BRIDGE_VERSION = "0.3.4";
 const FINISHED_ROUND_TEST_TOURNAMENT_ID = "593";
 const FINISHED_ROUND_TEST_STARTS_AT = Date.parse("2026-07-27T23:40:00+08:00");
 const FINISHED_ROUND_TEST_EXPIRES_AT = Date.parse("2026-07-28T23:59:59+08:00");
@@ -26,8 +27,53 @@ function deepClone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
+function oqResultSource(row) {
+  const deterministicLegacyOq = row && !row.resultSource && row.oqAutoAudit && String(row.sourceMessageKey || "").startsWith("oq-auto:");
+  return String(row && row.resultSource || (deterministicLegacyOq ? "oq-auto" : "legacy-unknown"));
+}
+
+function isVerifiedOqReadyRow(row) {
+  return Boolean(
+    row &&
+    row.status === "ready" &&
+    oqResultSource(row) === "oq-auto" &&
+    row.oqAutoAudit &&
+    FTD_TRANSCRIPT.extractOqGameId(row) &&
+    FTD_ROUND.hasScore(row)
+  );
+}
+
 function text(value, max = 1000) {
   return String(value == null ? "" : value).replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function accountKey(value) {
+  return text(value).toLowerCase().replace(/[\s\u3000\[\]()（）【】{}<>《》,，。:：;；"“”'‘’\-_\/\\|]+/g, "");
+}
+
+function ftdAccountForPlayer(state, name, playerId) {
+  const mapping = state && state.ftdPlayerAccountMapping && typeof state.ftdPlayerAccountMapping === "object"
+    ? state.ftdPlayerAccountMapping
+    : {};
+  const rows = [];
+  if (mapping.accountIndex && typeof mapping.accountIndex === "object") {
+    Object.entries(mapping.accountIndex).forEach(([lookupKey, value]) => {
+      const row = value && typeof value === "object" ? value : { account: value };
+      rows.push({ ...row, lookupKey });
+    });
+  }
+  if (Array.isArray(mapping.players)) rows.push(...mapping.players.filter((row) => row && row.deleted !== true));
+  const targetId = text(playerId);
+  const targetKey = accountKey(name);
+  const matches = new Set();
+  rows.forEach((row) => {
+    const account = text(row && row.account, 120);
+    if (!account) return;
+    const idMatch = targetId && [row.ftdId, row.id, row.playerId].some((value) => text(value) === targetId);
+    const nameMatch = targetKey && [row.lookupKey, row.ftdName, row.displayName, row.name, row.wofName].some((value) => accountKey(value) === targetKey);
+    if (idMatch || nameMatch) matches.add(account);
+  });
+  return matches.size === 1 ? [...matches][0] : "";
 }
 
 function sha256(value) {
@@ -77,6 +123,7 @@ class BridgeBroker {
   constructor(options = {}) {
     this.now = options.now || Date.now;
     this.extensionId = options.extensionId || EXPECTED_EXTENSION_ID;
+    this.bridgeVersion = options.bridgeVersion || EXPECTED_BRIDGE_VERSION;
     this.bridge = null;
     this.queue = [];
     this.waitingPoll = null;
@@ -86,9 +133,10 @@ class BridgeBroker {
   }
 
   register(payload, origin) {
-    const allowed = ["bridgeId", "tabId", "pageUrl", "extensionId"];
+    const allowed = ["bridgeId", "tabId", "pageUrl", "extensionId", "bridgeVersion"];
     if (!exactObjectKeys(payload, allowed)) throw makeCoordinatorError("bridge-register-schema", "bridge register schema rejected");
     if (origin !== `chrome-extension://${this.extensionId}` || payload.extensionId !== this.extensionId) throw makeCoordinatorError("bridge-origin", "Chrome extension origin rejected");
+    if (payload.bridgeVersion !== this.bridgeVersion) throw makeCoordinatorError("bridge-version", `Chrome bridge version ${this.bridgeVersion} required`);
     if (!/^[A-Za-z0-9_-]{12,160}$/.test(String(payload.bridgeId || ""))) throw makeCoordinatorError("bridge-id", "bridgeId rejected");
     if (!Number.isInteger(Number(payload.tabId)) || Number(payload.tabId) < 0) throw makeCoordinatorError("bridge-tab-id", "tabId rejected");
     if (!/^https:\/\/(?:www\.)?flipthedisc\.com\//.test(String(payload.pageUrl || ""))) throw makeCoordinatorError("bridge-url", "FTD page URL rejected");
@@ -97,6 +145,7 @@ class BridgeBroker {
       tabId: Number(payload.tabId),
       pageUrl: String(payload.pageUrl),
       extensionId: payload.extensionId,
+      bridgeVersion: payload.bridgeVersion,
       registeredAt: this.now(),
       lastSeenAt: this.now(),
       liveProof: null,
@@ -111,6 +160,7 @@ class BridgeBroker {
     return {
       connected,
       extensionId: this.extensionId,
+      bridgeVersion: bridge ? bridge.bridgeVersion : "",
       pageUrl: bridge ? bridge.pageUrl : "",
       tabId: bridge ? bridge.tabId : null,
       registeredAt: bridge ? bridge.registeredAt : 0,
@@ -312,6 +362,7 @@ class FtdAutopilotCoordinator {
         const parsed = JSON.parse(fs.readFileSync(candidate.file, "utf8").replace(/^\uFEFF/, ""));
         if (parsed && ACTIVE_PHASES.has(parsed.phase)) {
           this.session = parsed;
+          this.ensureSessionImages();
           const interrupted = this.session.inFlight && typeof this.session.inFlight === "object"
             ? deepClone(this.session.inFlight)
             : null;
@@ -377,15 +428,33 @@ class FtdAutopilotCoordinator {
     return copy;
   }
 
+  ensureSessionImages() {
+    if (!this.session) return null;
+    if (!this.session.images || typeof this.session.images !== "object") this.session.images = {};
+    if (this.session.image && !this.session.images.final) this.session.images.final = this.session.image;
+    for (const kind of ["pairing", "halfway", "final"]) {
+      if (!this.session.images[kind] || typeof this.session.images[kind] !== "object") {
+        this.session.images[kind] = { requestIssued: false, receipt: null };
+      }
+    }
+    return this.session.images;
+  }
+
+  uncertainImageDownload() {
+    const images = this.ensureSessionImages();
+    if (!images) return null;
+    return Object.entries(images).find(([, item]) => item && item.requestIssued && !item.receipt) || null;
+  }
+
   parseScope(state, request = {}) {
     if (!state || typeof state !== "object") throw makeCoordinatorError("state-missing", "本地共享状态不存在");
     const helper = state.scoreHelper && typeof state.scoreHelper === "object" ? state.scoreHelper : null;
     if (!helper || !Array.isArray(helper.rounds)) throw makeCoordinatorError("score-helper-missing", "比分辅助状态不存在");
-    const localRound = Math.trunc(Number(helper.activeRound));
+    const localRound = Math.trunc(Number(request.localRound || helper.activeRound));
     const round = helper.rounds[localRound - 1];
     const localStage = text(round && round.stage);
     if (!round || !["preliminary", "semifinal", "finals"].includes(localStage)) throw makeCoordinatorError("scope-invalid", "当前选中轮次/阶段无效");
-    const ftdUrl = text(state.ui && state.ui.ftdUrl, 500);
+    const ftdUrl = text(request.ftdUrl || (state.ui && state.ui.ftdUrl), 500);
     const match = ftdUrl.match(/^https:\/\/(?:www\.)?flipthedisc\.com\/live\/(\d+)(?:[/?#]|$)/i);
     if (!match) throw makeCoordinatorError("ftd-url-invalid", "请填写 https://flipthedisc.com/live/{id} 链接");
     const tournamentId = match[1];
@@ -398,10 +467,10 @@ class FtdAutopilotCoordinator {
     return { tournamentId, ftdUrl, localRound, localStage, roundStartAt, roundStartSource: text(round.roundStartSource), roundCount: Number(helper.roundCount) || helper.rounds.length };
   }
 
-  ensureRoundStartForStart() {
+  ensureRoundStartForStart(request = {}) {
     const current = this.readState().state;
     const helper = current && current.scoreHelper && typeof current.scoreHelper === "object" ? current.scoreHelper : null;
-    const localRound = Math.trunc(Number(helper && helper.activeRound));
+    const localRound = Math.trunc(Number(request.localRound || (helper && helper.activeRound)));
     const round = helper && Array.isArray(helper.rounds) ? helper.rounds[localRound - 1] : null;
     if (!round) throw makeCoordinatorError("scope-invalid", "当前选中轮次不存在");
     const existing = text(round.roundStartAt, 80);
@@ -414,7 +483,7 @@ class FtdAutopilotCoordinator {
     nextRound.roundStartSource = validExisting ? "ftd-autopilot-existing" : "ftd-autopilot-start";
     next.scoreHelper.updatedAt = this.now();
     next.savedAt = this.now();
-    this.writeState(next, validExisting ? "ftd-autopilot-start-source" : "ftd-autopilot-start-time");
+    this.writeState(next, validExisting ? "ftd-autopilot-start-source" : "ftd-autopilot-start-time", current);
     return { defaulted: !validExisting, roundStartAt: startedAt, roundStartSource: nextRound.roundStartSource };
   }
 
@@ -480,8 +549,8 @@ class FtdAutopilotCoordinator {
   }
 
   async start(request = {}) {
-    if (this.session && !TERMINAL_PHASES.has(this.session.phase)) throw makeCoordinatorError("session-active", "已有本轮自律会话正在运行");
-    const startTiming = this.ensureRoundStartForStart();
+    if (this.session && !TERMINAL_PHASES.has(this.session.phase)) throw makeCoordinatorError("session-active", "已有 AP 会话正在运行");
+    const startTiming = this.ensureRoundStartForStart(request);
     const scope = this.parseScope(this.readState().state, request);
     scope.roundStartDefaulted = startTiming.defaulted;
     let proof = this.bridge.status().liveProof;
@@ -505,7 +574,11 @@ class FtdAutopilotCoordinator {
       snapshots: [],
       tables: {},
       retries: { oq: 0 },
-      image: { requestIssued: false, receipt: null },
+      images: {
+        pairing: { requestIssued: false, receipt: null },
+        halfway: { requestIssued: false, receipt: null },
+        final: { requestIssued: false, receipt: null },
+      },
       createdAt: this.now(),
       updatedAt: this.now(),
       journalSeq: 0,
@@ -518,11 +591,27 @@ class FtdAutopilotCoordinator {
   }
 
   verifyControl(sessionId, token) {
-    if (!this.session || this.session.sessionId !== sessionId) throw makeCoordinatorError("session-not-found", "本轮自律会话不存在");
-    if (this.now() > Number(this.session.tokenExpiresAt)) throw makeCoordinatorError("session-token-expired", "本轮自律控制 token 已过期");
+    if (!this.session || this.session.sessionId !== sessionId) throw makeCoordinatorError("session-not-found", "AP 会话不存在");
+    if (this.now() > Number(this.session.tokenExpiresAt)) throw makeCoordinatorError("session-token-expired", "AP 控制 token 已过期");
     const expected = Buffer.from(this.session.tokenHash, "hex");
     const actual = Buffer.from(sha256(token), "hex");
-    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) throw makeCoordinatorError("session-token-invalid", "本轮自律控制 token 无效");
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) throw makeCoordinatorError("session-token-invalid", "AP 控制 token 无效");
+  }
+
+  claimControl(sessionId) {
+    if (!this.session || this.session.sessionId !== sessionId || TERMINAL_PHASES.has(this.session.phase)) {
+      throw makeCoordinatorError("session-not-found", "没有可接管的活动 AP 会话");
+    }
+    const token = crypto.randomBytes(32).toString("base64url");
+    this.session.tokenHash = sha256(token);
+    this.session.tokenExpiresAt = this.now() + 8 * 60 * 60 * 1000;
+    this.persist("session-control-claimed", { sessionId: this.session.sessionId });
+    return {
+      sessionId: this.session.sessionId,
+      token,
+      tokenExpiresAt: this.session.tokenExpiresAt,
+      session: this.publicSession(this.session),
+    };
   }
 
   pause(sessionId, token) {
@@ -530,7 +619,7 @@ class FtdAutopilotCoordinator {
     if (TERMINAL_PHASES.has(this.session.phase)) return this.publicSession(this.session);
     this.session.userPaused = true;
     this.session.phase = "paused";
-    this.session.pauseReason = { code: "user-paused", message: "裁判暂停了本轮自律" };
+    this.session.pauseReason = { code: "user-paused", message: "裁判暂停了 AP" };
     if (this.timer) this.clearTimer(this.timer);
     this.timer = null;
     this.persist("session-paused", this.session.pauseReason);
@@ -540,7 +629,8 @@ class FtdAutopilotCoordinator {
   resume(sessionId, token) {
     this.verifyControl(sessionId, token);
     if (this.session.phase !== "paused") throw makeCoordinatorError("session-not-paused", "会话当前不是暂停状态");
-    if (this.session.image && this.session.image.requestIssued && !this.session.image.receipt) throw makeCoordinatorError("download-not-retryable", "该会话的唯一 PNG 下载请求已失败或不确定；为防止重复下载，请紧急停止并重新启动新会话");
+    const uncertainImage = this.uncertainImageDownload();
+    if (uncertainImage) throw makeCoordinatorError("download-not-retryable", `${uncertainImage[0]} PNG 下载请求已失败或不确定；为防止重复下载，请紧急停止并重新启动新会话`);
     this.session.userPaused = false;
     this.session.finishedRoundWriteTestAuthorization = this.finishedRoundWriteTestReceipt(this.session.scope);
     this.session.pauseReason = null;
@@ -593,6 +683,7 @@ class FtdAutopilotCoordinator {
     try {
       if (this.session.stopRequested) return;
       if (!this.session.snapshots.length) await this.readAndImportRound();
+      if (this.session.phase === "paused") return;
       if (this.session.stopRequested) return;
       await this.pollOqAndProcessTables();
     } catch (error) {
@@ -608,7 +699,7 @@ class FtdAutopilotCoordinator {
   }
 
   async bridgeCommand(command, timeoutMs) {
-    if (!this.session.writeAllowed && ["writeScore", "writeTranscript", "renderVerifiedRoundImage"].includes(command.action)) throw makeCoordinatorError("writes-disabled", "外部写入已禁用");
+    if (!this.session.writeAllowed && ["writeScore", "writeTranscript", "renderPairingsImage", "renderVerifiedRoundImage"].includes(command.action)) throw makeCoordinatorError("writes-disabled", "外部写入已禁用");
     this.session.inFlight = {
       action: command.action,
       commandId: command.commandId,
@@ -645,35 +736,60 @@ class FtdAutopilotCoordinator {
     }
     this.session.phase = "importing-round";
     this.persist("phase", { phase: this.session.phase });
-    const current = this.readState().state;
-    this.assertScopeStillLocked(current);
-    const merged = FTD_ROUND.mergeBridgeRoundsIntoScoreHelper(current.scoreHelper, snapshots, this.session.scope, { importedAt: this.now() });
-    const next = deepClone(current);
-    next.scoreHelper = merged.scoreHelper;
-    next.ftdRound = {
-      source: "chrome-ftd-bridge",
-      url: this.session.scope.ftdUrl,
-      importedAt: new Date(this.now()).toISOString(),
-      round: this.session.scope.localRound,
-      stage: this.session.scope.localStage,
-      pairingCount: merged.pairings.length,
-      note: "Direct authenticated Chrome bridge import; Downloads were not scanned.",
-    };
-    next.step = "score-helper";
-    next.savedAt = this.now();
-    this.writeState(next, "ftd-autopilot-import");
+    const imported = this.importRoundSnapshots(snapshots);
+    const importedState = imported.state;
+    const pairings = imported.pairings;
     this.session.snapshots = snapshots;
-    for (const row of merged.pairings) {
+    for (const row of pairings) {
       if (!FTD_ROUND.isByeName(row.black) && !FTD_ROUND.isByeName(row.white)) {
         this.session.tables[this.tableKey(row)] = { phase: "polling-oq", ftdTable: Number(row.ftdTable), gameId: text(row.gameId), scoreCommandId: "", transcriptCommandId: "", uncertainScore: null, uncertainTranscript: null, retry: { transcript: 0 }, lastError: null };
       }
     }
     this.session.phase = "polling-oq";
-    this.persist("round-imported", { pairingCount: merged.pairings.length, fingerprints: merged.pairings.map((row) => row.pairingFingerprint) });
+    this.persist("round-imported", { pairingCount: pairings.length, fingerprints: pairings.map((row) => row.pairingFingerprint) });
+    await this.downloadPairingsImage(importedState, pairings);
+  }
+
+  importRoundSnapshots(snapshots) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = this.readState().state;
+      this.assertScopeStillLocked(current);
+      const importedAt = this.now();
+      const merged = FTD_ROUND.mergeBridgeRoundsIntoScoreHelper(current.scoreHelper, snapshots, this.session.scope, {
+        importedAt,
+        allowInactiveLockedRound: this.finishedRoundWriteTestAuthorized(this.session.scope),
+      });
+      const next = deepClone(current);
+      next.scoreHelper = merged.scoreHelper;
+      next.ftdRound = {
+        source: "chrome-ftd-bridge",
+        url: this.session.scope.ftdUrl,
+        importedAt: new Date(importedAt).toISOString(),
+        round: this.session.scope.localRound,
+        stage: this.session.scope.localStage,
+        pairingCount: merged.pairings.length,
+        note: "Direct authenticated Chrome bridge import; Downloads were not scanned.",
+      };
+      next.step = "score-helper";
+      next.savedAt = importedAt;
+      try {
+        const written = this.writeState(next, "ftd-autopilot-import", current);
+        const writtenState = written && written.state ? written.state : next;
+        const writtenRound = this.scopeRound(writtenState);
+        return { state: writtenState, pairings: writtenRound.ftdPairings || [] };
+      } catch (error) {
+        if (attempt === 0 && error && error.code === "entity-conflict") {
+          this.persist("round-import-conflict-retry", { code: error.code, message: text(error.message, 500) });
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw makeCoordinatorError("entity-conflict", "本轮配对导入并发冲突");
   }
 
   assertScopeStillLocked(state) {
-    const scope = this.parseScope(state);
+    const scope = this.parseScope(state, this.session && this.session.scope || {});
     for (const key of ["tournamentId", "localRound", "localStage", "roundStartAt"]) {
       if (String(scope[key]) !== String(this.session.scope[key])) throw makeCoordinatorError("scope-changed", `锁定会话期间 ${key} 已变化`);
     }
@@ -697,7 +813,7 @@ class FtdAutopilotCoordinator {
   }
 
   pendingMatchesTable(item, row) {
-    if (!item || item.resolvedByReferee === true) return false;
+    if (!item || item.resolvedByReferee === true || item.resolutionStatus === "resolved") return false;
     const table = Number(item.pendingTable || item.table || item.dirtyTable);
     return Number.isInteger(table) && table === Number(row.table);
   }
@@ -746,6 +862,7 @@ class FtdAutopilotCoordinator {
       if (this.session.stopRequested || this.session.userPaused) return;
       if (FTD_ROUND.isByeName(originalRow.black) || FTD_ROUND.isByeName(originalRow.white)) continue;
       await this.processTable(originalRow);
+      if (await this.tryDownloadHalfwayScoreImage()) return;
     }
     if (await this.tryFinalize()) return;
     this.session.phase = "polling-oq";
@@ -774,7 +891,7 @@ class FtdAutopilotCoordinator {
     }
     if (changed) {
       next.savedAt = this.now();
-      this.writeState(next, "ftd-autopilot-pending");
+      this.writeState(next, "ftd-autopilot-pending", state);
     }
   }
 
@@ -785,8 +902,8 @@ class FtdAutopilotCoordinator {
     const value = {
       id: sourceMessageKey,
       round: this.session.scope.localRound,
-      sender: `本轮自律 第${row.table}台`,
-      wechatSender: "本轮自律（不读取微信）",
+      sender: `AP 第${row.table}台`,
+      wechatSender: "AP（不读取微信）",
       verdict: code,
       resultText: message,
       reason: message,
@@ -794,7 +911,7 @@ class FtdAutopilotCoordinator {
       pendingKind: `automation-${code}`,
       pendingTable: String(row.table),
       table: String(row.table),
-      reviewAction: "裁判可修正映射/本地状态；条件解除后本轮自律会自动继续该桌。",
+      reviewAction: "裁判可修正映射/本地状态；条件解除后 AP 会自动继续该桌。",
       lastEditedBy: "automation",
       lastEditedAt: this.now(),
     };
@@ -862,9 +979,10 @@ class FtdAutopilotCoordinator {
       return;
     }
     const isAbsence = row.resultKind === "absence" && row.status === "completed" && row.lastEditedBy === "user" && FTD_ROUND.hasScore(row);
-    const isOqReady = row.status === "ready" && row.oqAutoAudit && this.rowGameId(row) && FTD_ROUND.hasScore(row) && row.lastEditedBy === "script";
+    const resultSource = oqResultSource(row);
+    const isOqReady = isVerifiedOqReadyRow(row);
     if (!isAbsence && !isOqReady) {
-      if (["ready", "completed"].includes(row.status) && row.lastEditedBy && row.lastEditedBy !== "script") {
+      if (["ready", "completed"].includes(row.status) && resultSource !== "oq-auto") {
         tableState.phase = "paused";
         tableState.lastError = { code: "manual-local-result", message: "本地存在非 OQ 直连来源结果，自动化不会把它作为外部写分来源" };
       }
@@ -880,7 +998,7 @@ class FtdAutopilotCoordinator {
     const nextRow = nextRound.ftdPairings.find((item) => item.pairingFingerprint === row.pairingFingerprint);
     this.clearAutomationPending(nextRound, nextRow);
     next.savedAt = this.now();
-    this.writeState(next, "ftd-autopilot-clear-waiting");
+    this.writeState(next, "ftd-autopilot-clear-waiting", current.state);
     current = this.findCurrentRow(template);
     row = current.row;
     const blackScore = Number(row.blackScore);
@@ -950,7 +1068,7 @@ class FtdAutopilotCoordinator {
     this.clearAutomationPending(round, row);
     next.scoreHelper.updatedAt = verifiedAtMs;
     next.savedAt = verifiedAtMs;
-    this.writeState(next, "ftd-autopilot-score-verified");
+    this.writeState(next, "ftd-autopilot-score-verified", current.state);
   }
 
   async recoverUncertainScore(row, tableState, blackScore, whiteScore) {
@@ -1005,7 +1123,7 @@ class FtdAutopilotCoordinator {
       const nextRow = nextRound.ftdPairings.find((item) => item.pairingFingerprint === row.pairingFingerprint);
       nextRow.transcriptNotApplicable = { reason: "referee-confirmed-absence", confirmedBy: "automation", refereeSource: "user", confirmedAt: this.now(), sessionId: this.session.sessionId };
       next.savedAt = this.now();
-      this.writeState(next, "ftd-autopilot-transcript-na");
+      this.writeState(next, "ftd-autopilot-transcript-na", current.state);
       tableState.phase = "complete";
       this.persist("transcript-not-applicable", { table: row.table, reason: "referee-confirmed-absence" });
       return;
@@ -1091,7 +1209,7 @@ class FtdAutopilotCoordinator {
     this.clearAutomationPending(round, row);
     next.scoreHelper.updatedAt = verifiedAtMs;
     next.savedAt = verifiedAtMs;
-    this.writeState(next, "ftd-autopilot-transcript-verified");
+    this.writeState(next, "ftd-autopilot-transcript-verified", current.state);
   }
 
   async recoverUncertainTranscript(row, tableState, transcript, oqGameId) {
@@ -1137,10 +1255,129 @@ class FtdAutopilotCoordinator {
     const row = round.ftdPairings.find((item) => item.pairingFingerprint === template.pairingFingerprint);
     this.upsertAutomationPending(round, row, code, text(message, 500));
     next.savedAt = this.now();
-    this.writeState(next, "ftd-autopilot-table-paused");
+    this.writeState(next, "ftd-autopilot-table-paused", current.state);
     tableState.phase = "paused";
     tableState.lastError = { code, message: text(message, 500), at: this.now() };
     this.persist("table-paused", { table: row.table, ...tableState.lastError });
+  }
+
+  pairingImageRows(state, pairings) {
+    return [...pairings]
+      .sort((a, b) => Number(a.table) - Number(b.table))
+      .map((row) => ({
+        label: this.imageRowLabel(row),
+        black: text(row.black, 240),
+        white: text(row.white, 240),
+        blackAccount: ftdAccountForPlayer(state, row.black, row.player0Id),
+        whiteAccount: ftdAccountForPlayer(state, row.white, row.player1Id),
+        password: `${String(this.session.scope.localRound).padStart(2, "0")}${String(row.table).padStart(2, "0")}`,
+      }));
+  }
+
+  async downloadImage(kind, action, snapshot, filename, source) {
+    const images = this.ensureSessionImages();
+    const image = images[kind];
+    if (image.receipt) return true;
+    if (image.requestIssued) {
+      this.session.phase = "paused";
+      this.session.pauseReason = { code: "download-uncertain", message: `${kind} PNG 下载请求没有成功回执` };
+      this.persist("download-blocked", { kind, ...this.session.pauseReason });
+      return false;
+    }
+    this.session.phase = "generating-image";
+    Object.assign(image, { requestIssued: true, commandId: randomId("renderImage"), filename, receipt: null, requestedAt: this.now() });
+    this.persist("image-request-armed", { kind, commandId: image.commandId, filename, source, rows: snapshot });
+    const command = {
+      ...this.baseCommand(this.session.scope, action, {
+        sessionId: this.session.sessionId,
+        commandId: image.commandId,
+        actualFtdRound: this.session.scope.definitions[0].actualFtdRound,
+      }),
+      snapshot,
+      filename,
+    };
+    this.session.phase = "downloading-image";
+    try {
+      const result = await this.bridgeCommand(command, 150000);
+      const receipt = result && result.downloadReceipt;
+      if (!receipt || receipt.state !== "complete" || !Number.isInteger(Number(receipt.downloadId)) || !text(receipt.filename)) {
+        throw makeCoordinatorError("download-not-complete", "Chrome 没有确认 PNG 下载完成");
+      }
+      image.receipt = deepClone({ ...receipt, pngSha256: result.pngSha256, rowCount: result.rowCount, renderedAt: result.renderedAt });
+      this.persist("image-download-verified", { kind, ...image.receipt });
+      return true;
+    } catch (error) {
+      this.session.phase = "paused";
+      this.session.pauseReason = { code: error.code || "download-failed", message: text(error.message, 500) };
+      this.persist("image-download-failed", { kind, ...this.session.pauseReason });
+      return false;
+    }
+  }
+
+  async downloadPairingsImage(state, pairings) {
+    const ok = await this.downloadImage(
+      "pairing",
+      "renderPairingsImage",
+      this.pairingImageRows(state, pairings),
+      this.pairingImageFilename(),
+      "locked-ftd-pairings",
+    );
+    if (ok) this.session.phase = "polling-oq";
+    return ok;
+  }
+
+  async readScoreImageRows(round, writtenRows, { verifyTranscripts = false, conflictPrefix = "比分图" } = {}) {
+    const snapshots = [];
+    for (const definition of this.session.scope.definitions) {
+      const command = this.baseCommand(this.session.scope, "readbackRound", { sessionId: this.session.sessionId, actualFtdRound: definition.actualFtdRound });
+      const snapshot = await this.bridgeCommand(command, 35000);
+      FTD_ROUND.assertBridgeRound(snapshot, this.session.scope.tournamentId, definition);
+      snapshots.push(snapshot);
+    }
+    const writtenByFingerprint = new Map(writtenRows.map((row) => [row.pairingFingerprint, row]));
+    return [...(round.ftdPairings || [])].sort((a, b) => Number(a.table) - Number(b.table)).map((row) => {
+      const snapshot = snapshots.find((item) => Number(item.actualFtdRound) === Number(row.ftdRound));
+      const live = snapshot && snapshot.pairings.find((item) => item.pairingFingerprint === row.pairingFingerprint);
+      if (!live) throw makeCoordinatorError("score-image-pairing-conflict", `${conflictPrefix}第 ${row.table} 台配对回读不一致`);
+      const written = writtenByFingerprint.get(row.pairingFingerprint);
+      if (written && (live.blackScore !== Number(written.blackScore) || live.whiteScore !== Number(written.whiteScore))) {
+        throw makeCoordinatorError("score-image-readback-conflict", `${conflictPrefix}第 ${row.table} 台比分回读不一致`);
+      }
+      if (written && verifyTranscripts && written.ftdTranscriptReceipt && sha256(live.transcript) !== written.ftdTranscriptReceipt.readbackTranscriptHash) {
+        throw makeCoordinatorError("score-image-transcript-conflict", `${conflictPrefix}第 ${row.table} 台棋谱回读不一致`);
+      }
+      return {
+        pairingFingerprint: row.pairingFingerprint,
+        label: this.imageRowLabel(row),
+        black: row.black,
+        white: row.white,
+        blackScore: written ? live.blackScore : null,
+        whiteScore: written ? live.whiteScore : null,
+        ftdBlackScore: Number.isInteger(live.blackScore) ? live.blackScore : null,
+        verified: Boolean(written),
+      };
+    });
+  }
+
+  async tryDownloadHalfwayScoreImage() {
+    const images = this.ensureSessionImages();
+    if (images.halfway.receipt) return false;
+    const state = this.readState().state;
+    this.assertScopeStillLocked(state);
+    const round = this.scopeRound(state);
+    const active = (round.ftdPairings || []).filter((row) => !FTD_ROUND.isByeName(row.black) && !FTD_ROUND.isByeName(row.white));
+    if (!active.length) return false;
+    const completed = active.filter((row) => row.status === "completed" && row.ftdScoreReceipt && row.ftdScoreReceipt.sessionId === this.session.sessionId);
+    const threshold = Math.ceil(active.length / 2);
+    if (completed.length < threshold) return false;
+    const rows = await this.readScoreImageRows(round, completed, { conflictPrefix: "半程比分图" });
+    const ok = await this.downloadImage("halfway", "renderVerifiedRoundImage", rows, this.halfwayImageFilename(), "halfway-ftd-readback");
+    if (ok) {
+      this.session.phase = "polling-oq";
+      this.persist("halfway-image-complete", { completedCount: completed.length, activeCount: active.length, threshold });
+      return false;
+    }
+    return true;
   }
 
   async tryFinalize() {
@@ -1158,51 +1395,10 @@ class FtdAutopilotCoordinator {
     }
     this.session.phase = "verifying-transcripts";
     this.persist("final-readback-start", { tableCount: active.length });
-    const snapshots = [];
-    for (const definition of this.session.scope.definitions) {
-      const command = this.baseCommand(this.session.scope, "readbackRound", { sessionId: this.session.sessionId, actualFtdRound: definition.actualFtdRound });
-      const snapshot = await this.bridgeCommand(command, 35000);
-      FTD_ROUND.assertBridgeRound(snapshot, this.session.scope.tournamentId, definition);
-      snapshots.push(snapshot);
-    }
-    const imageRows = [];
-    for (const row of active.sort((a, b) => Number(a.table) - Number(b.table))) {
-      const snapshot = snapshots.find((item) => Number(item.actualFtdRound) === Number(row.ftdRound));
-      const live = snapshot && snapshot.pairings.find((item) => item.pairingFingerprint === row.pairingFingerprint);
-      if (!live || live.blackScore !== Number(row.blackScore) || live.whiteScore !== Number(row.whiteScore)) throw makeCoordinatorError("final-score-readback-conflict", `最终回读第 ${row.table} 台比分不一致`);
-      if (row.ftdTranscriptReceipt && sha256(live.transcript) !== row.ftdTranscriptReceipt.readbackTranscriptHash) throw makeCoordinatorError("final-transcript-readback-conflict", `最终回读第 ${row.table} 台棋谱不一致`);
-      imageRows.push({ label: this.imageRowLabel(row), black: live.player0Name, white: live.player1Name, blackScore: live.blackScore, whiteScore: live.whiteScore, verified: true });
-    }
-    if (this.session.image.requestIssued) {
-      if (this.session.image.receipt) return this.finishDone();
-      this.session.phase = "paused";
-      this.session.pauseReason = { code: "download-uncertain", message: "唯一 PNG 下载请求没有成功回执" };
-      this.persist("download-blocked", this.session.pauseReason);
-      return true;
-    }
-    const filename = this.verifiedImageFilename();
-    this.session.phase = "generating-image";
-    this.session.image = { requestIssued: true, commandId: randomId("renderImage"), filename, receipt: null, requestedAt: this.now() };
-    this.persist("image-request-armed", { commandId: this.session.image.commandId, filename, source: "final-ftd-readback", rows: imageRows });
-    const command = {
-      ...this.baseCommand(this.session.scope, "renderVerifiedRoundImage", { sessionId: this.session.sessionId, commandId: this.session.image.commandId, actualFtdRound: this.session.scope.definitions[0].actualFtdRound }),
-      snapshot: imageRows,
-      filename,
-    };
-    this.session.phase = "downloading-image";
-    try {
-      const result = await this.bridgeCommand(command, 150000);
-      const receipt = result && result.downloadReceipt;
-      if (!receipt || receipt.state !== "complete" || !Number.isInteger(Number(receipt.downloadId)) || !text(receipt.filename)) throw makeCoordinatorError("download-not-complete", "Chrome 没有确认 PNG 下载完成");
-      this.session.image.receipt = deepClone({ ...receipt, pngSha256: result.pngSha256, rowCount: result.rowCount, renderedAt: result.renderedAt });
-      this.persist("image-download-verified", this.session.image.receipt);
-      return this.finishDone();
-    } catch (error) {
-      this.session.phase = "paused";
-      this.session.pauseReason = { code: error.code || "download-failed", message: text(error.message, 500) };
-      this.persist("image-download-failed", this.session.pauseReason);
-      return true;
-    }
+    const imageRows = await this.readScoreImageRows(round, active, { verifyTranscripts: true, conflictPrefix: "最终比分图" });
+    const ok = await this.downloadImage("final", "renderVerifiedRoundImage", imageRows, this.verifiedImageFilename(), "final-ftd-readback");
+    if (!ok) return true;
+    return this.finishDone();
   }
 
   imageRowLabel(row) {
@@ -1217,19 +1413,33 @@ class FtdAutopilotCoordinator {
     return `ftd-${id}-round-${String(this.session.scope.localRound).padStart(2, "0")}-scores-verified.png`;
   }
 
+  halfwayImageFilename() {
+    const id = this.session.scope.tournamentId;
+    if (this.session.scope.localStage === "semifinal") return `ftd-${id}-semifinal-scores-halfway-verified.png`;
+    if (this.session.scope.localStage === "finals") return `ftd-${id}-finals-scores-halfway-verified.png`;
+    return `ftd-${id}-round-${String(this.session.scope.localRound).padStart(2, "0")}-scores-halfway-verified.png`;
+  }
+
+  pairingImageFilename() {
+    const id = this.session.scope.tournamentId;
+    if (this.session.scope.localStage === "semifinal") return `ftd-${id}-semifinal-pairings.png`;
+    if (this.session.scope.localStage === "finals") return `ftd-${id}-finals-pairings.png`;
+    return `ftd-${id}-round-${String(this.session.scope.localRound).padStart(2, "0")}-pairings.png`;
+  }
+
   finishDone() {
     this.session.phase = "done";
     this.session.writeAllowed = false;
     this.session.completedAt = this.now();
     this.session.pauseReason = null;
-    this.persist("session-done", { image: this.session.image, criteria: "all scores/transcripts final-readback verified and Chrome download complete" });
+    this.persist("session-done", { images: this.session.images, criteria: "pairings, halfway scores, and final verified scores all have complete Chrome download receipts" });
     return true;
   }
 
   async handleRunError(error) {
     if (!this.session) return;
     const code = text(error && error.code, 100) || "autopilot-error";
-    const message = text(error && error.message, 500) || "本轮自律失败";
+    const message = text(error && error.message, 500) || "AP 失败";
     if (code === "bridge-disconnected" || code === "bridge-timeout") {
       this.session.phase = "paused";
       this.session.pauseReason = { code: "bridge-disconnected", message };
@@ -1251,6 +1461,7 @@ class FtdAutopilotCoordinator {
 
 module.exports = {
   EXPECTED_EXTENSION_ID,
+  EXPECTED_BRIDGE_VERSION,
   TERMINAL_PHASES,
   ACTIVE_PHASES,
   BridgeBroker,
@@ -1259,4 +1470,6 @@ module.exports = {
   safeJournalValue,
   sha256,
   localDateTimeValue,
+  oqResultSource,
+  isVerifiedOqReadyRow,
 };

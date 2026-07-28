@@ -26,6 +26,9 @@
   const FTD_ROUND = IS_NODE
     ? require("./ftd-round-shared.js")
     : window.FtdRoundShared;
+  const STATE_SYNC = IS_NODE
+    ? require("./frontend-state-sync.js")
+    : window.TournamentStateSync;
 
   const APP_VERSION = (() => {
     try {
@@ -311,6 +314,7 @@
     })();
 
   const LOCAL_SYNC_STATE_URL = "/api/state";
+  const LOCAL_SYNC_COMMAND_URL = "/api/state/commands";
   const LOCAL_SYNC_EVENTS_URL = "/api/events";
   const LOCAL_SYNC_FTD_ROUND_URL = "/api/ftd-round";
   const LOCAL_SYNC_FTD_TRANSCRIPT_PREPARE_URL = "/api/ftd-transcripts/prepare";
@@ -323,6 +327,7 @@
   const LOCAL_SYNC_AUTOMATION_STATUS_URL = "/api/automation/status";
   const LOCAL_SYNC_AUTOMATION_PROBE_URL = "/api/automation/probe";
   const LOCAL_SYNC_AUTOMATION_START_URL = "/api/automation/start";
+  const LOCAL_SYNC_AUTOMATION_CLAIM_URL = "/api/automation/claim";
   const LOCAL_SYNC_AUTOMATION_PAUSE_URL = "/api/automation/pause";
   const LOCAL_SYNC_AUTOMATION_RESUME_URL = "/api/automation/resume";
   const LOCAL_SYNC_AUTOMATION_STOP_URL = "/api/automation/stop";
@@ -348,6 +353,11 @@
   let localSyncLastFtdMtimeMs = 0;
   let localSyncIgnoreNextFtdEventUntil = 0;
   let localSyncSkippedRemoteCount = 0;
+  let localSyncBaseState = null;
+  let localSyncConnectedOnce = false;
+  let activeInputDraft = null;
+  let deferredEntityRender = false;
+  const BROWSER_PREFS_KEY = "tournament-assistant-browser-ui-v1";
 
   function hasLocalSyncEditsInFlight() {
     return Boolean(
@@ -441,8 +451,7 @@
     if (saveTimer) window.clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
       saveTimer = null;
-      const ok = safeLocalStorageSet(STORAGE_KEY, JSON.stringify(state));
-      if (ok) localSaveDirty = false;
+      const ok = saveBrowserPreferences();
       if (ok) updateAutosaveChip(state.savedAt);
       if (!ok) {
         const ts = now();
@@ -473,18 +482,14 @@
     lastLocalEditAt = state.savedAt;
     if (saveTimer) window.clearTimeout(saveTimer);
     saveTimer = null;
-    if (safeLocalStorageSet(STORAGE_KEY, JSON.stringify(state))) {
-      localSaveDirty = false;
-      updateAutosaveChip(state.savedAt);
-    }
+    if (saveBrowserPreferences()) updateAutosaveChip(state.savedAt);
     queueLocalSyncPush({ immediate: true });
   }
 
   function saveStateToLocalOnly() {
     if (!state || Number(state.version) !== STORAGE_VERSION) return false;
-    const ok = safeLocalStorageSet(STORAGE_KEY, JSON.stringify(state));
+    const ok = saveBrowserPreferences();
     if (ok) {
-      localSaveDirty = false;
       updateAutosaveChip(state.savedAt);
     }
     return ok;
@@ -515,20 +520,29 @@
     void saveAndPushLocalSyncNow();
   }
 
-  function loadFromStorage() {
-    const raw = safeLocalStorageGet(STORAGE_KEY);
+  function browserPreferences() {
+    return {
+      viewedStep: getCurrentStep(),
+      viewedRound: Math.max(1, Math.trunc(Number(state && state.scoreHelper && state.scoreHelper.activeRound) || 1)),
+      ui: state && state.ui ? deepClone(state.ui) : {},
+    };
+  }
+
+  function saveBrowserPreferences() {
+    return safeLocalStorageSet(BROWSER_PREFS_KEY, JSON.stringify(browserPreferences()));
+  }
+
+  function loadBrowserPreferences() {
+    const raw = safeLocalStorageGet(BROWSER_PREFS_KEY);
     if (!raw) return null;
 
     try {
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object") return null;
 
-      // Allow loading previous schema as long as version matches.
-      if (parsed.version !== STORAGE_VERSION) return null;
-
-      return sanitizeLoadedState(parsed);
+      return parsed;
     } catch (e) {
-      console.warn("解析本地状态失败：", e);
+      console.warn("解析浏览器界面偏好失败：", e);
       return null;
     }
   }
@@ -569,18 +583,6 @@
     }
   }
 
-  function cloneStateForLocalSync() {
-    const copy = deepClone(state);
-    if (!copy || typeof copy !== "object") return null;
-    copy.localSync = {
-      clientId: LOCAL_SYNC_CLIENT_ID,
-      source: "frontend",
-      baseRevision: localSyncLastRevision,
-      savedAt: now(),
-    };
-    return copy;
-  }
-
   function queueLocalSyncPush(options = {}) {
     if (!LOCAL_SYNC_ENABLED || localSyncApplyingRemote) return;
     if (!state || Number(state.version) !== STORAGE_VERSION) return;
@@ -600,49 +602,58 @@
       return localSyncPushPromise;
     }
 
-    const payload = cloneStateForLocalSync();
-    if (!payload) return;
+    if (!localSyncBaseState) return null;
+    const mutations = STATE_SYNC.buildMutations(localSyncBaseState, state);
+    if (!mutations.length) {
+      localSaveDirty = false;
+      return { ok: true, changed: false, revision: localSyncLastRevision, changedEntities: [] };
+    }
 
     const showStatus = !(options && options.silentStatus);
     const run = (async () => {
       localSyncPushInFlight = true;
       if (showStatus) setLocalSyncStatus("busy", "本地同步：保存中");
       try {
-        const response = await fetch(LOCAL_SYNC_STATE_URL, {
+        const response = await fetch(LOCAL_SYNC_COMMAND_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           cache: "no-store",
           body: JSON.stringify({
-            source: "frontend",
-            baseRevision: localSyncLastRevision,
-            state: payload,
+            commandId: `${LOCAL_SYNC_CLIENT_ID}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            type: "entities.mutate",
+            actor: "user",
+            payload: { mutations },
           }),
         });
         const result = await response.json().catch(() => null);
         if (!response.ok || !result || result.ok !== true) {
-          throw new Error(
+          const conflict = new Error(
             (result && (result.detail || result.error)) ||
               `HTTP ${response.status}`,
           );
+          conflict.status = response.status;
+          conflict.payload = result;
+          throw conflict;
         }
         localSyncLastRevision = Number(result.revision);
-        const preservedFtdPairings = Array.isArray(result.preservedFtdPairings)
-          ? result.preservedFtdPairings
-          : [];
-        const preservedAgentPending = Array.isArray(result.preservedAgentPending)
-          ? result.preservedAgentPending
-          : [];
-        const preservedFtdPlayerAccountMapping = Boolean(result.preservedFtdPlayerAccountMapping);
-        const preservedFtdPlayerRegistration = Boolean(result.preservedFtdPlayerRegistration);
-        if (preservedFtdPairings.length || preservedAgentPending.length || preservedFtdPlayerAccountMapping || preservedFtdPlayerRegistration) {
-          showSnackbar(
-            "共享状态有 agent/OQ 更新，已先保留你的当前操作；需要时点刷新同步最新状态",
-            5200,
-          );
-        }
+        STATE_SYNC.applyChangedEntities(localSyncBaseState, result.changedEntities || []);
+        STATE_SYNC.applyChangedEntities(state, result.changedEntities || []);
+        if (state.localSync) state.localSync.revision = localSyncLastRevision;
+        if (localSyncBaseState.localSync) localSyncBaseState.localSync.revision = localSyncLastRevision;
+        localSaveDirty = false;
         if (showStatus) setLocalSyncStatus("ok", "本地同步：已保存");
         return result;
       } catch (error) {
+        if (error && error.status === 409 && error.payload && error.payload.authoritativeEntity) {
+          const authoritative = error.payload.authoritativeEntity;
+          STATE_SYNC.applyChangedEntities(localSyncBaseState, [{
+            kind: authoritative.kind,
+            id: authoritative.id,
+            revision: authoritative.revision,
+            entity: authoritative.entity,
+          }]);
+          showSnackbar("该行已被其他操作更新；你的输入草稿已保留，请核对后重试", 6200);
+        }
         reportLocalSyncError("写入共享状态失败", error);
         return null;
       } finally {
@@ -665,6 +676,8 @@
   function applyRemoteState(remoteState, meta = {}) {
     const currentVisibleStep = getCurrentStep();
     const currentCheckinView = state && state.ui ? state.ui.checkinView : "";
+    const currentUi = state && state.ui ? deepClone(state.ui) : {};
+    const currentViewedRound = Math.max(1, Math.trunc(Number(state && state.scoreHelper && state.scoreHelper.activeRound) || 1));
     const loaded = sanitizeLoadedState(remoteState);
     if (!loaded || !Array.isArray(loaded.players)) {
       throw new Error("共享状态无法通过前端校验");
@@ -676,9 +689,12 @@
 
     localSyncApplyingRemote = true;
     try {
+      localSyncBaseState = deepClone(loaded);
       state = loaded;
-      if (state.step !== "score-helper") {
-        state.step = hasRemotePlayers ? "checkin" : state.step;
+      state.step = currentVisibleStep === "self-check" ? "checkin" : currentVisibleStep;
+      state.ui = { ...(state.ui || {}), ...currentUi };
+      if (state.scoreHelper) {
+        state.scoreHelper.activeRound = Math.max(1, Math.min(state.scoreHelper.roundCount || 1, currentViewedRound));
       }
       if (currentVisibleStep === "self-check") {
         viewStepOverride = "self-check";
@@ -696,7 +712,7 @@
         state.ui.checkinView = currentCheckinView;
       }
       applyStateToUI();
-      safeLocalStorageSet(STORAGE_KEY, JSON.stringify(state));
+      saveBrowserPreferences();
       updateAutosaveChip(state.savedAt);
       if (!(meta && meta.silentStatus)) {
         setLocalSyncStatus("ok", (meta && meta.statusText) || "本地同步：已连接");
@@ -712,7 +728,7 @@
 
   async function fetchLocalSyncState(options = {}) {
     if (!LOCAL_SYNC_ENABLED) return;
-    if (!options.force && hasLocalSyncEditsInFlight()) {
+    if (!options.force && (hasLocalSyncEditsInFlight() || activeInputDraft)) {
       localSyncSkippedRemoteCount += 1;
       if (localSyncSkippedRemoteCount === 1 || localSyncSkippedRemoteCount % 6 === 0) {
         setLocalSyncStatus("busy", "本地同步：等待本地操作保存");
@@ -829,12 +845,23 @@
     return normalizeFtdByePairing(merged);
   }
 
-  function mergeFtdRoundIntoScoreHelper(ftdRound, options = {}) {
+  async function mergeFtdRoundIntoScoreHelper(ftdRound, options = {}) {
     const payload = ftdRound && typeof ftdRound === "object" ? ftdRound : null;
     if (!payload) throw new Error("FTD 轮次数据为空");
 
     const helper = ensureScoreHelper();
     const activeRound = getActiveScoreRound(helper);
+    const importPreconditions = {
+      roundId: activeRound && activeRound.entityId,
+      roundRevision: Number(activeRound && activeRound.entityRevision) || 0,
+      helperId: helper.entityId,
+      helperRevision: Number(helper.entityRevision) || 0,
+      ftdRoundRevision: Number(state.localSync && state.localSync.domains && state.localSync.domains.ftdRound && state.localSync.domains.ftdRound.entityRevision) || 0,
+      scoreRows: (activeRound && Array.isArray(activeRound.ftdPairings) ? activeRound.ftdPairings : []).map((row) => ({
+        id: row.entityId,
+        revision: Number(row.entityRevision) || 0,
+      })),
+    };
     const activeStage = normalizeWhitespace(activeRound && activeRound.stage);
     const importedStage = ftdPayloadStage(payload);
     const ftdRoundRaw = Number(payload.ftdRound != null ? payload.ftdRound : payload.round);
@@ -935,8 +962,58 @@
     });
     state.step = "score-helper";
     viewStepOverride = null;
+    if (!importPreconditions.roundId || !importPreconditions.helperId) {
+      throw new Error("共享状态尚未提供轮次实体身份，请重新连接本地服务后再导入");
+    }
+    const roundPatch = { ...round };
+    delete roundPatch.ftdPairings;
+    delete roundPatch.pending;
+    delete roundPatch.manualPending;
+    delete roundPatch.completed;
+    delete roundPatch.entityId;
+    delete roundPatch.entityRevision;
+    const response = await fetch(LOCAL_SYNC_COMMAND_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        commandId: `${LOCAL_SYNC_CLIENT_ID}-round-import-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        type: "round.import",
+        actor: "user",
+        target: { kind: "round", id: importPreconditions.roundId },
+        expectedRevision: importPreconditions.roundRevision,
+        preconditions: [
+          { target: { kind: "scoreHelperMetadata", id: importPreconditions.helperId }, expectedRevision: importPreconditions.helperRevision },
+          { target: { kind: "domain", id: "domain:ftdRound" }, expectedRevision: importPreconditions.ftdRoundRevision },
+          ...importPreconditions.scoreRows.map((row) => ({
+            target: { kind: "scoreRow", id: row.id },
+            expectedRevision: row.revision,
+          })),
+        ],
+        payload: {
+          pairings: nextPairings,
+          roundPatch,
+          scoreHelperPatch: {
+            version: helper.version,
+            preliminaryRoundCount: helper.preliminaryRoundCount,
+            roundCount: helper.roundCount,
+            roundCountSource: helper.roundCountSource,
+            autoRoundCountPlayerCount: helper.autoRoundCountPlayerCount,
+            updatedAt: helper.updatedAt,
+          },
+          ftdRound: state.ftdRound,
+        },
+      }),
+    });
+    const commandResult = await response.json().catch(() => null);
+    if (!response.ok || !commandResult || commandResult.ok !== true) {
+      throw new Error((commandResult && (commandResult.error || commandResult.detail)) || `HTTP ${response.status}`);
+    }
+    STATE_SYNC.applyChangedEntities(localSyncBaseState, commandResult.changedEntities || []);
+    STATE_SYNC.applyChangedEntities(state, commandResult.changedEntities || []);
+    localSyncLastRevision = Number(commandResult.revision) || localSyncLastRevision;
     applyStateToUI();
-    scheduleSave();
+    saveBrowserPreferences();
     return {
       round: roundNumber,
       label: scoreStageLabel(round),
@@ -975,7 +1052,7 @@
       }
       if (!result.ftdRound) return false;
 
-      const merged = mergeFtdRoundIntoScoreHelper(result.ftdRound, {
+      const merged = await mergeFtdRoundIntoScoreHelper(result.ftdRound, {
         currentFile: result.file || "",
       });
       if (options.showToast !== false) {
@@ -997,6 +1074,77 @@
       return;
     }
 
+    const draftElement = (target) => {
+      if (!target || !target.matches || !target.matches("input, textarea, select, [contenteditable='true']")) return null;
+      return target;
+    };
+    document.addEventListener("focusin", (event) => {
+      const element = draftElement(event.target);
+      if (!element) return;
+      const owner = element.closest && element.closest("[data-entity-id]");
+      activeInputDraft = {
+        element,
+        entityId: owner && owner.dataset ? String(owner.dataset.entityId || "") : "",
+        value: "value" in element ? element.value : element.textContent,
+        selectionStart: typeof element.selectionStart === "number" ? element.selectionStart : null,
+        selectionEnd: typeof element.selectionEnd === "number" ? element.selectionEnd : null,
+        dirty: false,
+      };
+    }, true);
+    document.addEventListener("input", (event) => {
+      const element = draftElement(event.target);
+      if (!element || !activeInputDraft || activeInputDraft.element !== element) return;
+      activeInputDraft.value = "value" in element ? element.value : element.textContent;
+      activeInputDraft.selectionStart = typeof element.selectionStart === "number" ? element.selectionStart : null;
+      activeInputDraft.selectionEnd = typeof element.selectionEnd === "number" ? element.selectionEnd : null;
+      activeInputDraft.dirty = true;
+    }, true);
+    document.addEventListener("focusout", (event) => {
+      if (!activeInputDraft || activeInputDraft.element !== event.target) return;
+      window.setTimeout(() => {
+        activeInputDraft = null;
+        if (deferredEntityRender) {
+          deferredEntityRender = false;
+          applyStateToUI();
+        }
+      }, 0);
+    }, true);
+
+    const renderEntityChanges = (changes) => {
+      if (activeInputDraft) {
+        deferredEntityRender = true;
+        return;
+      }
+      const kinds = new Set((changes || []).map((item) => item && item.kind));
+      if (["scoreRow", "pending", "manualPending", "completedItem", "round", "scoreHelperMetadata"].some((kind) => kinds.has(kind))) {
+        if (getCurrentStep() === "score-helper") renderScoreHelper();
+      }
+      if (["player", "mappingRow", "mappingMetadata", "registrationRow", "registrationMetadata"].some((kind) => kinds.has(kind))) {
+        if (getCurrentStep() === "checkin") refreshCheckinUI();
+      }
+      if (kinds.has("domain")) applyStateToUI();
+    };
+
+    const applyEntityEvent = (payload) => {
+      const changes = Array.isArray(payload && payload.changedEntities) ? payload.changedEntities : [];
+      if (!changes.length) return;
+      if (!localSyncBaseState) return;
+      STATE_SYNC.applyChangedEntities(localSyncBaseState, changes);
+      const result = STATE_SYNC.applyChangedEntities(state, changes, {
+        blockedEntityId: activeInputDraft && activeInputDraft.dirty ? activeInputDraft.entityId : "",
+      });
+      const rev = Number(payload.revision);
+      if (Number.isFinite(rev)) {
+        localSyncLastRevision = Math.max(localSyncLastRevision, rev);
+        if (state.localSync) state.localSync.revision = localSyncLastRevision;
+        if (localSyncBaseState.localSync) localSyncBaseState.localSync.revision = localSyncLastRevision;
+      }
+      if (result.conflicts.length) {
+        showSnackbar("服务器已更新你正在编辑的这一行；草稿和光标已保留，请核对后提交", 6500);
+      }
+      renderEntityChanges(changes.filter((item) => !result.conflicts.some((conflict) => conflict.id === item.id)));
+    };
+
     setLocalSyncStatus("busy", "本地同步：连接中");
     fetchLocalSyncState({ force: true, showToast: false, pushIfEmpty: true });
 
@@ -1012,12 +1160,16 @@
             if (payload && payload.type === "error") {
               throw new Error(payload.error || "服务端文件监听错误");
             }
-            if (payload && payload.type === "state") {
-              const rev = Number(payload.revision);
-              if (Number.isFinite(rev) && rev === localSyncLastRevision) {
-                return;
-              }
+            if (payload && payload.type === "entities") {
+              applyEntityEvent(payload);
+            } else if (payload && payload.type === "snapshot-replaced") {
               fetchLocalSyncState({ force: false, showToast: true, silentStatus: true });
+            } else if (payload && payload.type === "hello") {
+              const rev = Number(payload.revision);
+              if (localSyncConnectedOnce && Number.isFinite(rev) && rev !== localSyncLastRevision) {
+                fetchLocalSyncState({ force: false, showToast: false, silentStatus: true });
+              }
+              localSyncConnectedOnce = true;
             } else if (payload && payload.type === "ftd-round") {
               if (Date.now() < localSyncIgnoreNextFtdEventUntil) {
                 localSyncIgnoreNextFtdEventUntil = 0;
@@ -1037,9 +1189,6 @@
       }
     }
 
-    localSyncPollTimer = window.setInterval(() => {
-      fetchLocalSyncState({ force: false, showToast: false, silentStatus: true });
-    }, 5000);
   }
 
   // ------------------------------
@@ -1284,11 +1433,26 @@
       safe.accountMapping = sanitizeAccountMapping(parsed.accountMapping);
       safe.ftdPlayerAccountMapping = sanitizeFtdPlayerAccountMapping(parsed.ftdPlayerAccountMapping);
       safe.ftdPlayerRegistration = FTD_PLAYER_REGISTRATION.sanitizeRegistration(parsed.ftdPlayerRegistration);
+      if (safe.ftdPlayerRegistration && parsed.ftdPlayerRegistration) {
+        safe.ftdPlayerRegistration.entityId = parsed.ftdPlayerRegistration.entityId || "";
+        safe.ftdPlayerRegistration.entityRevision = Number(parsed.ftdPlayerRegistration.entityRevision) || 0;
+        const rawRegistrationRows = new Map((parsed.ftdPlayerRegistration.rows || []).map((row) => [String(row && row.rowId || ""), row]));
+        (safe.ftdPlayerRegistration.rows || []).forEach((row) => {
+          const rawRow = rawRegistrationRows.get(String(row.rowId || ""));
+          if (rawRow) {
+            row.entityId = rawRow.entityId || "";
+            row.entityRevision = Number(rawRow.entityRevision) || 0;
+          }
+        });
+      }
       safe.wechatGroupNicks = sanitizeWechatGroupNicks(parsed.wechatGroupNicks);
       safe.ftdRound = sanitizeFtdRoundMeta(parsed.ftdRound);
       safe.savedAt = Number.isFinite(Number(parsed.savedAt))
         ? Number(parsed.savedAt)
         : now();
+      safe.localSync = parsed.localSync && typeof parsed.localSync === "object"
+        ? deepClone(parsed.localSync)
+        : {};
 
       // ui prefs (optional)
       const ui = parsed && typeof parsed.ui === "object" ? parsed.ui : {};
@@ -1329,6 +1493,8 @@
         const isNew = Boolean(obj.isNew);
 
         const player = {
+          entityId: normalizeWhitespace(obj.entityId || ""),
+          entityRevision: Math.max(0, Math.trunc(Number(obj.entityRevision) || 0)),
           id: 0,
           displayName,
           account,
@@ -1431,6 +1597,8 @@
     const opponentScoreRaw = Number(obj.opponentScore);
     const roundRaw = Number(obj.round);
     return {
+      entityId: normalizeWhitespace(obj.entityId || ""),
+      entityRevision: Math.max(0, Math.trunc(Number(obj.entityRevision) || 0)),
       id:
         rawId ||
         `score-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`,
@@ -1490,6 +1658,9 @@
         ? Number(obj.resolvedAt)
         : null,
       resolvedNote: normalizeWhitespace(obj.resolvedNote || ""),
+      resolutionStatus: normalizeWhitespace(obj.resolutionStatus || (obj.resolvedByReferee === true ? "resolved" : "open")),
+      resolvedByCommandId: normalizeWhitespace(obj.resolvedByCommandId || ""),
+      selectedSourceKey: normalizeWhitespace(obj.selectedSourceKey || ""),
       registeredAt: Number.isFinite(Number(obj.registeredAt))
         ? Number(obj.registeredAt)
         : null,
@@ -1569,6 +1740,8 @@
             const blackScoreRaw = Number(item && item.blackScore);
             const whiteScoreRaw = Number(item && item.whiteScore);
             const pairing = {
+              entityId: normalizeWhitespace(item && item.entityId),
+              entityRevision: Math.max(0, Math.trunc(Number(item && item.entityRevision) || 0)),
               table:
                 Number.isFinite(tableRaw) && tableRaw > 0
                   ? Math.trunc(tableRaw)
@@ -1600,10 +1773,8 @@
               resultSortKey: Number.isFinite(Number(item && item.resultSortKey))
                 ? Number(item.resultSortKey)
                 : scoreResultSortKey(item && item.resultTime),
-              resultKind:
-                normalizeWhitespace(item && item.resultKind) === "absence"
-                  ? "absence"
-                  : "",
+              resultKind: normalizeWhitespace(item && item.resultKind),
+              resultSource: normalizeWhitespace(item && item.resultSource),
               updatedAt: Number.isFinite(Number(item && item.updatedAt))
                 ? Number(item.updatedAt)
                 : null,
@@ -1684,6 +1855,8 @@
       item.round = round;
     });
     return {
+      entityId: normalizeWhitespace(obj.entityId || ""),
+      entityRevision: Math.max(0, Math.trunc(Number(obj.entityRevision) || 0)),
       round,
       stage:
         forcedStage === SCORE_STAGE_SEMIFINAL || forcedStage === SCORE_STAGE_FINALS
@@ -1840,6 +2013,8 @@
         ? Math.trunc(activeRaw)
         : 1;
     return {
+      entityId: normalizeWhitespace(obj.entityId || ""),
+      entityRevision: Math.max(0, Math.trunc(Number(obj.entityRevision) || 0)),
       version: 2,
       preliminaryRoundCount,
       roundCount,
@@ -1972,6 +2147,8 @@
           const ftdName = normalizeWhitespace(item.ftdName || item.displayName || item.name || "");
           if (!ftdName) return null;
           return {
+            entityId: normalizeWhitespace(item.entityId || ""),
+            entityRevision: Math.max(0, Math.trunc(Number(item.entityRevision) || 0)),
             ftdName,
             ftdId: item.ftdId == null ? "" : item.ftdId,
             account: normalizeWhitespace(item.account || ""),
@@ -2037,6 +2214,8 @@
     });
     return {
       ...base,
+      entityId: normalizeWhitespace(obj.entityId || ""),
+      entityRevision: Math.max(0, Math.trunc(Number(obj.entityRevision) || 0)),
       scope: normalizeWhitespace(obj.scope || "ftd-player-table"),
       type: normalizeWhitespace(obj.type || "ftd-player-oq-account-map"),
       sourceFile: normalizeWhitespace(obj.sourceFile || ""),
@@ -5144,6 +5323,7 @@
       row.className = `player-item ${player.checkedIn ? "player-item--checked" : "player-item--waiting"}`;
       if (player.isNew) row.classList.add("player-item--new");
       row.dataset.playerId = String(player.id);
+      row.dataset.entityId = String(player.entityId || "");
 
       const left = document.createElement("div");
       left.className = "player-left";
@@ -7568,11 +7748,7 @@
         throw new Error("本地共享状态写入失败");
       }
 
-      const savedHelper = sanitizeScoreHelper(
-        syncResult.state && syncResult.state.scoreHelper
-          ? syncResult.state.scoreHelper
-          : state.scoreHelper,
-      );
+      const savedHelper = sanitizeScoreHelper(state.scoreHelper);
       if (
         savedHelper.preliminaryRoundCount !== appliedPreliminaryCount ||
         savedHelper.roundCount !== expectedRoundCount
@@ -7582,9 +7758,6 @@
         );
       }
 
-      if (syncResult.state) {
-        applyRemoteState(syncResult.state, { showToast: false, silentStatus: true });
-      }
       showUndoSnackbar(`已更新预赛轮次：${appliedPreliminaryCount} 轮`, async () => {
         restoreUndoSnapshot(snapshot);
         localSaveDirty = true;
@@ -7594,9 +7767,6 @@
         if (!undoResult || undoResult.ok !== true) {
           showAlert("撤销保存失败", "轮次已在当前页面撤销，但未能写入本地共享状态，请检查本地同步连接。");
           return;
-        }
-        if (undoResult.state) {
-          applyRemoteState(undoResult.state, { showToast: false, silentStatus: true });
         }
         showSnackbar("已撤销轮次设置", 1800);
       });
@@ -7962,7 +8132,7 @@
               <button class="score-card__btn" type="button" data-score-action="complete" data-score-mode="manualPending" data-score-index="${index}">登记</button>
             </div>`;
     return `
-      <article class="score-card ${index === 0 && mode === "pending" ? "score-card--active" : ""} ${mode === "pending" ? "score-card--pending-alert" : ""} ${isResolved ? "score-card--resolved" : ""} ${isManual ? "score-card--manual" : ""} ${isDirty ? "score-card--dirty" : ""}">
+      <article class="score-card ${index === 0 && mode === "pending" ? "score-card--active" : ""} ${mode === "pending" ? "score-card--pending-alert" : ""} ${isResolved ? "score-card--resolved" : ""} ${isManual ? "score-card--manual" : ""} ${isDirty ? "score-card--dirty" : ""}" data-entity-id="${escapeHtml(item && item.entityId || "")}">
         <div class="score-card__index">${isDone || isResolved ? "✓" : isManual ? "P" : isDirty ? "脏" : index + 1}</div>
         <div class="score-card__main">
           <div class="score-card__title">${escapeHtml(title)}</div>
@@ -8028,7 +8198,7 @@
   function getFtdPairingEditorText(item) {
     const editor = normalizeWhitespace(item && item.lastEditedBy);
     if (editor === "agent") return "agent 修改";
-    if (editor === "automation") return "本轮自律验证";
+    if (editor === "automation") return "AP 验证";
     if (editor === "script") return "脚本修改";
     if (editor === "user") return "用户修改";
     return "";
@@ -8222,7 +8392,7 @@
           const oqGameAvailableHtml = renderOqGameAvailableTag(item);
           if (isFtdByePairing(item)) {
             return `
-          <div class="score-ftd__row score-ftd__row--completed score-ftd__row--bye" data-ftd-index="${index}">
+          <div class="score-ftd__row score-ftd__row--completed score-ftd__row--bye" data-ftd-index="${index}" data-entity-id="${escapeHtml(item.entityId || "")}">
             <div class="score-ftd__table">${escapeHtml(tableLabel)}</div>
             <div class="score-ftd__match">
               <div class="score-ftd__player score-ftd__player--black">
@@ -8257,7 +8427,7 @@
             ? `<div class="score-ftd__match-tags">${oqGameAvailableHtml}</div>`
             : "";
           return `
-          <div class="score-ftd__row score-ftd__row--${escapeHtml(rowStatus)}" data-ftd-index="${index}">
+          <div class="score-ftd__row score-ftd__row--${escapeHtml(rowStatus)}" data-ftd-index="${index}" data-entity-id="${escapeHtml(item.entityId || "")}">
             <div class="score-ftd__table">${escapeHtml(tableLabel)}</div>
             <div class="score-ftd__match">
               <div class="score-ftd__player score-ftd__player--black">
@@ -8583,7 +8753,7 @@
           .slice(0, 24);
         const defaultNickSet = new Set((nickOptions.length ? nickOptions : groupNicks.slice(0, 24)));
         return `
-          <div class="score-ftd-map__row score-ftd-map__row--${escapeHtml(rowStatusClass)}" data-ftd-map-row="1" data-ftd-map-name="${escapeHtml(row.ftdName)}">
+          <div class="score-ftd-map__row score-ftd-map__row--${escapeHtml(rowStatusClass)}" data-ftd-map-row="1" data-ftd-map-name="${escapeHtml(row.ftdName)}" data-entity-id="${escapeHtml(row.entityId || "")}">
             <div class="score-ftd-map__name-block">
               <div class="score-ftd-map__caption">姓名</div>
               <div class="score-ftd-map__name">${escapeHtml(row.ftdName || "未命名")}</div>
@@ -9684,16 +9854,20 @@
   async function buildFtdScoreConsoleCodeFromTemplate(batch, options = {}) {
     const tournamentId = getFtdTournamentIdFromUrl();
     if (!tournamentId) throw new Error("缺少 FTD live 链接，无法取得 tournamentId");
-    const response = await fetch(`./ftd-score-console.js?t=${Date.now()}`, {
-      method: "GET",
-      cache: "no-store",
-    });
+    const stamp = Date.now();
+    const [response, rendererResponse] = await Promise.all([
+      fetch(`./ftd-score-console.js?t=${stamp}`, { method: "GET", cache: "no-store" }),
+      fetch(`./chrome-ftd-bridge/ftd-score-png-renderer.js?t=${stamp}`, { method: "GET", cache: "no-store" }),
+    ]);
     let code = await response.text();
+    const rendererSource = await rendererResponse.text();
     if (!response.ok || !code.trim()) throw new Error(`HTTP ${response.status}`);
-    if (/127\.0\.0\.1|localhost|\/api\//i.test(code)) {
+    if (!rendererResponse.ok || !rendererSource.trim()) throw new Error(`PNG renderer HTTP ${rendererResponse.status}`);
+    if (/127\.0\.0\.1|localhost|\/api\//i.test(code + rendererSource)) {
       throw new Error("登分脚本包含本地 API 访问，已拒绝复制");
     }
     return code
+      .replace("__FTD_SCORE_PNG_RENDERER_SOURCE__", rendererSource)
       .replace("__FTD_SCORE_TOURNAMENT_ID__", JSON.stringify(tournamentId))
       .replace("__FTD_SCORE_ROUND__", JSON.stringify(batch.round))
       .replace("__FTD_SCORE_RESULTS__", JSON.stringify(batch.items, null, 2))
@@ -9879,10 +10053,7 @@
     }
     const revisionValue = Number(result.revision);
     if (Number.isFinite(revisionValue)) localSyncLastRevision = revisionValue;
-    if (result.state) {
-      applyRemoteState(result.state, { showToast: false, silentStatus: true });
-    }
-    return state;
+    return result.state || state;
   }
 
   function firstReadyFtdIndex(round) {
@@ -10508,7 +10679,7 @@
     });
   }
 
-  function applyOqPendingCandidate(index, candidateIndex) {
+  async function applyOqPendingCandidate(index, candidateIndex) {
     const helper = ensureScoreHelper();
     const round = getActiveScoreRound();
     const source = scoreItemBucket(round, "pending");
@@ -10551,56 +10722,64 @@
     }
     const blackScore = Math.trunc(Number(candidate.blackScore));
     const whiteScore = Math.trunc(Number(candidate.whiteScore));
-    const snapshot = captureUndoSnapshot();
     const editedAt = now();
-    pairing.status = "ready";
-    pairing.dirty = false;
-    pairing.dirtySource = "";
-    pairing.dirtyAt = null;
-    pairing.reporter = "OQ自动候选";
-    pairing.opponent = "";
-    pairing.blackScore = blackScore;
-    pairing.whiteScore = whiteScore;
-    pairing.resultText = `OQ候选应用：${scoreCandidateTimeText(candidate)} ${blackScore}-${whiteScore}`;
-    pairing.reason = normalizeWhitespace(candidate.scoreReason) || "OQ候选对局由裁判选择应用";
-    pairing.sourceMessageKey = `oq-auto:${normalizeWhitespace(candidate.candidateKey || candidate.gameId || `${round.round}-${table}-${candIdx}`)}`;
-    pairing.sourceLocalId = "";
-    pairing.imagePath = "";
-    pairing.resultKind = "oq-auto";
-    pairing.resultTime = normalizeWhitespace(candidate.resultTime || candidate.createdLocal || candidate.createdAt || localResultTimeFromMs(editedAt));
-    pairing.resultSortKey = scoreResultSortKey(pairing.resultTime) || editedAt;
-    pairing.updatedAt = editedAt;
-    pairing.completedAt = null;
-    markFtdPairingEdited(pairing, "script", editedAt);
-    pairing.oqAutoAudit = {
+    const resultTime = normalizeWhitespace(candidate.resultTime || candidate.createdLocal || candidate.createdAt || localResultTimeFromMs(editedAt));
+    const sourceKey = `oq-auto:${normalizeWhitespace(candidate.candidateKey || candidate.gameId || `${round.round}-${table}-${candIdx}`)}`;
+    const audit = {
       by: "user-applied-oq-pending",
       at: localResultTimeFromMs(editedAt),
       candidate: { ...candidate },
+      game: { gameId: normalizeWhitespace(candidate.gameId || candidate.candidateKey) },
       ftdBlackAccount: normalizeWhitespace(candidate.ftdBlackAccount),
       ftdWhiteAccount: normalizeWhitespace(candidate.ftdWhiteAccount),
     };
-    const removed = [];
-    const nextPending = source.filter((entry, entryIndex) => {
+    const competing = source.filter((entry, entryIndex) => {
       const sameTable = normalizeWhitespace(entry && (entry.pendingTable || entry.table)) === table;
       const oqPending = normalizeWhitespace(entry && entry.pendingKind).startsWith("oq-auto-");
-      if (sameTable && oqPending) {
-        removed.push(entry);
-        return false;
-      }
-      if (entryIndex === idx && !isUserPendingScoreItem(entry)) {
-        removed.push(entry);
-        return false;
-      }
-      return true;
+      return (sameTable && oqPending) || (entryIndex === idx && !isUserPendingScoreItem(entry));
     });
-    round.pending = nextPending;
-    helper.updatedAt = now();
-    renderScoreHelper();
-    scheduleSave();
-    showUndoSnackbar(`已应用 OQ 候选：第 ${table} 台 ${blackScore}-${whiteScore}`, () => {
-      restoreUndoSnapshot(snapshot);
-      showSnackbar("已撤销应用候选", 1800);
-    });
+    if (!pairing.entityId || competing.some((entry) => !entry.entityId)) {
+      showSnackbar("同步实体身份尚未载入，请重新连接本地服务后再应用", 3000);
+      return;
+    }
+    try {
+      const response = await fetch(LOCAL_SYNC_COMMAND_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          commandId: `${LOCAL_SYNC_CLIENT_ID}-oq-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          type: "oq.resolveCandidate",
+          actor: "user",
+          target: { kind: "scoreRow", id: pairing.entityId },
+          expectedRevision: pairing.entityRevision,
+          preconditions: competing.map((entry) => ({
+            target: { kind: "pending", id: entry.entityId },
+            expectedRevision: entry.entityRevision,
+          })),
+          payload: {
+            blackScore,
+            whiteScore,
+            sourceKey,
+            resultTime,
+            resultSortKey: scoreResultSortKey(resultTime) || editedAt,
+            editedAt,
+            audit,
+          },
+        }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result || result.ok !== true) {
+        throw new Error((result && (result.error || result.detail)) || `HTTP ${response.status}`);
+      }
+      STATE_SYNC.applyChangedEntities(localSyncBaseState, result.changedEntities || []);
+      STATE_SYNC.applyChangedEntities(state, result.changedEntities || []);
+      localSyncLastRevision = Number(result.revision) || localSyncLastRevision;
+      if (getActiveScoreRound() && getActiveScoreRound().entityId === round.entityId) renderScoreHelper();
+      showSnackbar(`已应用 OQ 候选：第 ${table} 台 ${blackScore}-${whiteScore}`, 2600);
+    } catch (error) {
+      showAlert("OQ 候选应用失败", `${error && error.message ? error.message : error}\n\n当前草稿和裁判选择没有被覆盖，请刷新该行后重试。`);
+    }
   }
 
   function moveScoreItemToManualPending(mode, index) {
@@ -10668,7 +10847,7 @@
     else if (action === "manual-pending") moveScoreItemToManualPending(mode, index);
     else if (action === "restore-pending") restoreScoreItemToPending(index);
     else if (action === "resolve-pending") resolvePendingScoreItem(index);
-    else if (action === "apply-oq-candidate") applyOqPendingCandidate(index, btn.dataset.candidateIndex);
+    else if (action === "apply-oq-candidate") void applyOqPendingCandidate(index, btn.dataset.candidateIndex);
   }
 
   function makeSafeFilename(name) {
@@ -12331,7 +12510,7 @@
       "- Use the unified helper entrypoint as .\\wechat-decrypt\\agent_tournament_helper.cmd.",
       "- Do not open all of the long AGENTS.md or the full checkin-state.json by default. Use rg -n to find the relevant section, then open only narrow line ranges or read only the listed state fields.",
       "- Do not paste or restate the whole shared JSON. Use /api/state or a small local query to inspect only fields needed for this stage.",
-      "- When the local server is available, write shared-state changes through http://127.0.0.1:4174/api/state instead of direct JSON file writes.",
+      "- When the local server is available, write entity commands through http://127.0.0.1:4174/api/state/commands instead of posting snapshots or writing JSON directly.",
       "- Do not deploy Cloudflare Pages. Do not automate WeChat. Only use the local helper to read already-decrypted or cached local data.",
     ];
   }
@@ -12360,7 +12539,7 @@
       "- Check for parse errors, duplicates or suspicious near-duplicates, missing accounts, account/name column mistakes, wrong groups, stale state, and obvious name/account split mistakes.",
       "- If the count is near 31/32 or 63/64, remind the referee that one extra checked-in player can change the required round count.",
       "- Report only correctness risks that matter. Do not edit shared state based on a guess.",
-      "- If an edit is required, state the evidence first, then write through /api/state only when deterministic.",
+      "- If an edit is required, state the evidence first, then write only affected entities through /api/state/commands when deterministic.",
     ].join("\n");
   }
 
@@ -12394,7 +12573,7 @@
       "- History command skeleton: .\\wechat-decrypt\\agent_tournament_helper.cmd history --start \"<match date> 19:27\" --end \"<match date> HH:mm\" --limit 1000 --output agent_cache\\checkin_history_<window>.json",
       "- Mark only deterministic sign-ins. If a valid-looking number appears near leave/withdraw/forfeit/non-participation wording, treat it as blocking and ask the user.",
       "- If a sender is unmapped, roster matching is ambiguous, or a write fails, stop that sub-action and report it.",
-      "- Write through /api/state so the frontend receives the same revision.",
+      "- Write only the affected player entities through /api/state/commands so the frontend receives the same revision.",
     ].join("\n");
   }
 
@@ -12424,7 +12603,7 @@
       "4. If deterministic additions exist, run: .\\wechat-decrypt\\agent_tournament_helper.cmd patch-ftd-map --patch-file \"<agent reviewed patch JSON>\"",
       "5. If no deterministic additions exist, still run: .\\wechat-decrypt\\agent_tournament_helper.cmd patch-ftd-map --no-changes-reviewed",
       "6. Run: .\\wechat-decrypt\\agent_tournament_helper.cmd validate-and-publish-ftd-map",
-      "7. The final command must do OQ validation, write the local table through /api/state, publish the online collaboration table, and verify statistics.",
+      "7. The final command must do OQ validation, write affected mapping entities through /api/state/commands, publish the online collaboration table, and verify statistics.",
       "",
       "Review rules:",
       "- Group nicknames usually put the player's name on the left and the OQ account on the right, separated by a space, hyphen, underscore, slash, or similar punctuation. Split only when clear.",
@@ -12464,7 +12643,7 @@
       "- One exact result => matched-single.",
       "- Multiple exact results => numeric rating outranks null; select the highest numeric rating. If the top rating ties, randomly select one. If all ratings are null, randomly select one.",
       "- For a random tie save the selected internal Player ID, selection rule, all tied Player IDs, and resolver batch/time.",
-      "- Write results only through http://127.0.0.1:4174/api/state. If the API is unavailable, stop and do not write checkin-state.json directly.",
+      "- Write results only through http://127.0.0.1:4174/api/state/commands. If the API is unavailable, stop and do not write checkin-state.json directly.",
       "- Print a compact count summary and list every unmatched or name-parse-unresolved row for referee handling.",
     ].join("\n");
   }
@@ -12587,15 +12766,20 @@
     try {
       flushSave();
       const latestState = await fetchLatestLocalSyncStateForAction();
-      const response = await fetch(`./ftd-download-console.js?t=${Date.now()}`, {
-        method: "GET",
-        cache: "no-store",
-      });
+      const stamp = Date.now();
+      const [response, rendererResponse] = await Promise.all([
+        fetch(`./ftd-download-console.js?t=${stamp}`, { method: "GET", cache: "no-store" }),
+        fetch(`./chrome-ftd-bridge/ftd-pairing-png-renderer.js?t=${stamp}`, { method: "GET", cache: "no-store" }),
+      ]);
       let code = await response.text();
+      const rendererSource = await rendererResponse.text();
       if (!response.ok || !code.trim()) {
         throw new Error(`HTTP ${response.status}`);
       }
-      if (/127\.0\.0\.1|localhost|\/api\/ftd-round/i.test(code)) {
+      if (!rendererResponse.ok || !rendererSource.trim()) {
+        throw new Error(`PNG renderer HTTP ${rendererResponse.status}`);
+      }
+      if (/127\.0\.0\.1|localhost|\/api\/ftd-round/i.test(code + rendererSource)) {
         throw new Error("脚本包含本地 POST/API 访问，已拒绝复制");
       }
       const helper = sanitizeScoreHelper(latestState.scoreHelper || state.scoreHelper);
@@ -12618,6 +12802,7 @@
           ? localMapping
           : remoteMapping;
       code = code
+        .replace("__FTD_PAIRING_PNG_RENDERER_SOURCE__", rendererSource)
         .replace("__FTD_TARGET_ROUND__", JSON.stringify(targetRound))
         .replace("__FTD_TARGET_STAGE__", JSON.stringify(targetStage))
         .replace("__FTD_TOURNAMENT_URL__", JSON.stringify(ftdUrl))
@@ -12722,14 +12907,10 @@
       if (!response.ok || !result || result.ok !== true) {
         throw new Error((result && (result.detail || result.error)) || `HTTP ${response.status}`);
       }
-      if (!result.state || typeof result.state !== "object") {
-        throw new Error("本地同步接口没有返回覆写后的完整 state");
-      }
-      applyRemoteState(result.state, { showToast: false, silentStatus: true, force: true });
       state.ui.checkinView = "mapping";
       viewStepOverride = null;
       refreshCheckinUI();
-      saveStateToLocalOnly();
+      saveBrowserPreferences();
       const summary = result.summary || {};
       const matched = Number(summary.matchedCount) || 0;
       const total = Number(summary.playerCount) || 0;
@@ -12890,15 +13071,18 @@
       const phase = session ? session.phase : "idle";
       const reason = session && session.pauseReason && session.pauseReason.message ? `；${session.pauseReason.message}` : "";
       const scope = session && session.scope ? `；${scoreStageLabel({ round: session.scope.localRound, stage: session.scope.localStage })}` : "";
+      const images = session && session.images && typeof session.images === "object" ? session.images : {};
+      const imageMark = (item) => item && item.receipt ? "✓" : item && item.requestIssued ? "处理中" : "待";
+      const imageProgress = session ? `；PNG 配对${imageMark(images.pairing)} / 半程${imageMark(images.halfway)} / 最终${imageMark(images.final)}` : "";
       ftdAutopilotStatusEl.dataset.active = active ? "true" : "false";
       ftdAutopilotStatusEl.dataset.phase = phase;
-      ftdAutopilotStatusEl.innerHTML = `<strong>本轮自律：</strong><span>${escapeHtml(ftdAutopilotPhaseText(phase))}${escapeHtml(scope)}${escapeHtml(reason)}；Chrome 桥${bridge.connected ? "已连接" : "未连接"}${session && !canControl && active ? "；本标签页无控制 token" : ""}</span>`;
+      ftdAutopilotStatusEl.innerHTML = `<strong>AP：</strong><span>${escapeHtml(ftdAutopilotPhaseText(phase))}${escapeHtml(scope)}${escapeHtml(reason)}${escapeHtml(imageProgress)}；Chrome 桥${bridge.connected ? "已连接" : "未连接"}${session && !canControl && active ? "；操作时将接管控制" : ""}</span>`;
     }
     if (btnFtdAutopilotStart) btnFtdAutopilotStart.disabled = active || !bridge.connected;
     if (btnFtdAutopilotProbe) btnFtdAutopilotProbe.disabled = !bridge.connected;
-    if (btnFtdAutopilotPause) btnFtdAutopilotPause.disabled = !active || !canControl || session.phase === "paused" || session.phase === "stopping";
-    if (btnFtdAutopilotResume) btnFtdAutopilotResume.disabled = !active || !canControl || session.phase !== "paused";
-    if (btnFtdAutopilotStop) btnFtdAutopilotStop.disabled = !active || !canControl || session.phase === "stopping";
+    if (btnFtdAutopilotPause) btnFtdAutopilotPause.disabled = !active || session.phase === "paused" || session.phase === "stopping";
+    if (btnFtdAutopilotResume) btnFtdAutopilotResume.disabled = !active || session.phase !== "paused";
+    if (btnFtdAutopilotStop) btnFtdAutopilotStop.disabled = !active || session.phase === "stopping";
   }
 
   async function fetchFtdAutopilotJson(url, options = {}) {
@@ -12921,9 +13105,22 @@
     } catch (error) {
       ftdAutopilotStatus = null;
       renderFtdAutopilotStatus();
-      if (!silent) showAlert("本轮自律不可用", error.message);
+      if (!silent) showAlert("AP 不可用", error.message);
       return null;
     }
+  }
+
+  function currentFtdAutopilotScopeRequest() {
+    const { round, roundNo } = selectedScoreRoundInfo();
+    const ftdUrl = normalizeWhitespace((scoreFtdUrlInput && scoreFtdUrlInput.value) || (state.ui && state.ui.ftdUrl) || "");
+    const match = ftdUrl.match(/^https:\/\/(?:www\.)?flipthedisc\.com\/live\/(\d+)(?:[/?#]|$)/i);
+    if (!round || !match) throw new Error("请先选择本轮并填写有效的 FTD live 链接");
+    return {
+      tournamentId: match[1],
+      localRound: roundNo,
+      localStage: normalizeWhitespace(round.stage),
+      ftdUrl,
+    };
   }
 
   async function probeFtdAutopilot() {
@@ -12932,7 +13129,7 @@
     try {
       syncActiveScoreRoundStartFromInput();
       await saveAndPushLocalSyncNow();
-      const result = await fetchFtdAutopilotJson(LOCAL_SYNC_AUTOMATION_PROBE_URL, { method: "POST", body: "{}" });
+      const result = await fetchFtdAutopilotJson(LOCAL_SYNC_AUTOMATION_PROBE_URL, { method: "POST", body: JSON.stringify(currentFtdAutopilotScopeRequest()) });
       showAlert("只读探测通过", `已证明登录、TD 权限与第二条 Socket 共存。赛事 ${result.tournamentId}，未执行任何写入。`);
       await refreshFtdAutopilotStatus();
     } catch (error) {
@@ -12944,30 +13141,39 @@
 
   async function startFtdAutopilot() {
     if (!LOCAL_SYNC_ENABLED) { showAlert("无法启动", "请从 http://127.0.0.1:4174/ 打开本地页面。"); return; }
-    setBtnBusy(btnFtdAutopilotStart, true, "启动中…", "本轮自律");
+    setBtnBusy(btnFtdAutopilotStart, true, "启动中…", "AP");
     try {
       syncActiveScoreRoundStartFromInput();
       const saved = await saveAndPushLocalSyncNow();
       if (!saved || saved.ok !== true) throw new Error("本地共享状态同步失败");
       stopOqScorePolling({ quiet: true });
-      const result = await fetchFtdAutopilotJson(LOCAL_SYNC_AUTOMATION_START_URL, { method: "POST", body: "{}" });
+      const result = await fetchFtdAutopilotJson(LOCAL_SYNC_AUTOMATION_START_URL, { method: "POST", body: JSON.stringify(currentFtdAutopilotScopeRequest()) });
       writeFtdAutopilotControl({ sessionId: result.sessionId, token: result.token, tokenExpiresAt: result.tokenExpiresAt });
       ftdAutopilotStatus = { ok: true, bridge: (ftdAutopilotStatus && ftdAutopilotStatus.bridge) || {}, session: result.session };
       renderFtdAutopilotStatus();
-      showAlert("本轮自律已启动", "已锁定当前赛事与轮次。请保持 FTD 标签页打开；自动化运行期间不要同时在 Console 手动写分或写棋谱。异常只暂停受影响的桌。 ");
+      showAlert("AP 已启动", "已锁定当前赛事与轮次。请保持 FTD 标签页打开；自动化运行期间不要同时在 Console 手动写分或写棋谱。异常只暂停受影响的桌。 ");
     } catch (error) {
       showAlert("启动失败", error.message);
     } finally {
-      setBtnBusy(btnFtdAutopilotStart, false, "启动中…", "本轮自律");
+      setBtnBusy(btnFtdAutopilotStart, false, "启动中…", "AP");
       await refreshFtdAutopilotStatus();
     }
   }
 
   async function controlFtdAutopilot(action) {
-    const control = readFtdAutopilotControl();
-    if (!control) { showAlert("无法控制", "当前标签页没有该会话的控制 token。请不要在共享状态或日志中保存 token。"); return false; }
+    const session = ftdAutopilotStatus && ftdAutopilotStatus.session;
+    let control = readFtdAutopilotControl();
+    if (!session || FTD_AUTOPILOT_TERMINAL_PHASES.has(session.phase)) { showAlert("无法控制", "当前没有活动 AP 会话。"); return false; }
     const url = action === "pause" ? LOCAL_SYNC_AUTOMATION_PAUSE_URL : action === "resume" ? LOCAL_SYNC_AUTOMATION_RESUME_URL : LOCAL_SYNC_AUTOMATION_STOP_URL;
     try {
+      if (!control || control.sessionId !== session.sessionId) {
+        const claimed = await fetchFtdAutopilotJson(LOCAL_SYNC_AUTOMATION_CLAIM_URL, {
+          method: "POST",
+          body: JSON.stringify({ sessionId: session.sessionId }),
+        });
+        control = { sessionId: claimed.sessionId, token: claimed.token, tokenExpiresAt: claimed.tokenExpiresAt };
+        writeFtdAutopilotControl(control);
+      }
       await fetchFtdAutopilotJson(url, { method: "POST", body: JSON.stringify({ sessionId: control.sessionId, token: control.token }) });
       await refreshFtdAutopilotStatus();
       if (action === "stop") showSnackbar("已请求安全停止；不会回滚已经验证写入的内容", 3200);
@@ -12982,11 +13188,11 @@
     if (!isFtdAutopilotActive()) { void action(); return; }
     const control = readFtdAutopilotControl();
     if (!control || !ftdAutopilotStatus.session || control.sessionId !== ftdAutopilotStatus.session.sessionId) {
-      showAlert("本轮自律正在运行", `${label} 可能与自动写入冲突。请先使用“暂停”或“紧急停止”，再走手动流程。`);
+      showAlert("AP 正在运行", `${label} 可能与自动写入冲突。请先使用“暂停”或“紧急停止”，再走手动流程。`);
       return;
     }
     showConfirm(
-      "先暂停本轮自律",
+      "先暂停 AP",
       `${label} 可能与自动写入冲突。可先暂停后继续准备手动代码；也可取消并使用“紧急停止”。`,
       async () => { if (await controlFtdAutopilot("pause")) await action(); },
       "暂停后继续",
@@ -13036,6 +13242,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           round: roundNo,
+          roundId: round.entityId,
+          expectedRoundRevision: round.entityRevision,
+          scoreRows: round.ftdPairings.map((item) => ({ id: item.entityId, revision: item.entityRevision })),
           roundCount: helper.roundCount,
           roundStart,
           source: options.source || "frontend-manual",
@@ -13047,12 +13256,6 @@
       if (!response.ok || !result || result.ok !== true) {
         throw new Error((result && (result.detail || result.error)) || `HTTP ${response.status}`);
       }
-      const latest = await fetchLatestLocalSyncStateForAction();
-      if (latest) {
-        state.scoreHelper = sanitizeScoreHelper(latest.scoreHelper || state.scoreHelper);
-      }
-      renderScoreHelper();
-      saveStateToLocalOnly();
       const applied = Number(result.appliedCount || 0);
       const gameAvailable = Number(result.gameAvailableCount || 0);
       const pending = Number(result.pendingCount || 0);
@@ -13517,7 +13720,7 @@
             source: ftdRound.source || "frontend-file-import",
           });
           mergedRounds.push(
-            mergeFtdRoundIntoScoreHelper(result.ftdRound, {
+            await mergeFtdRoundIntoScoreHelper(result.ftdRound, {
               sourceFile: file.name || "",
               currentFile: result.currentFile || result.file || "",
             }),
@@ -14842,11 +15045,11 @@
     on(btnCopyFtdScoreConsole, "click", () => runManualFtdAction(copyFtdScoreConsoleCode, "复制 FTD 登分代码"));
     on(btnCopyFtdTranscriptConsole, "click", () => runManualFtdAction(copyFtdTranscriptConsoleCode, "复制本轮棋谱导入代码"));
     on(btnUpdateRoundOqScores, "click", () => {
-      if (isFtdAutopilotActive()) showAlert("本轮自律正在轮询 OQ", "调度由本地协调器负责；请先暂停或停止本轮自律再手动更新。");
+      if (isFtdAutopilotActive()) showAlert("AP 正在轮询 OQ", "调度由本地协调器负责；请先暂停或停止 AP 再手动更新。");
       else void updateRoundScoresFromOq();
     });
     on(btnToggleOqScorePoll, "click", () => {
-      if (isFtdAutopilotActive()) showAlert("本轮自律正在轮询 OQ", "前端 OQ 轮询已让位给本地协调器；请先暂停或停止本轮自律。");
+      if (isFtdAutopilotActive()) showAlert("AP 正在轮询 OQ", "前端 OQ 轮询已让位给本地协调器；请先暂停或停止 AP。");
       else toggleOqScorePolling();
     });
     on(btnFtdAutopilotProbe, "click", probeFtdAutopilot);
@@ -14895,7 +15098,7 @@
       const btn = target && target.closest("button[data-round]");
       if (!btn) return;
       if (isFtdAutopilotActive()) {
-        showAlert("轮次已锁定", "本轮自律只控制启动时选中的轮次。请先暂停或紧急停止，再切换本地轮次。");
+        showAlert("轮次已锁定", "AP 只控制启动时选中的轮次。请先暂停或紧急停止，再切换本地轮次。");
         return;
       }
       const round = Number(btn.dataset.round);
@@ -15430,32 +15633,17 @@
     // These webviews may restrict downloads & PWA installation; show a one-time tip.
     maybeShowInAppBrowserTipOnce();
 
-    const loaded = loadFromStorage();
-    if (loaded) {
-      state = loaded;
-
-      // Saved check-in progress exists: default to showing import page, without overwriting stored step.
-      if (
-        state.step === "checkin" &&
-        state.players &&
-        state.players.length > 0
-      ) {
-        viewStepOverride = "import";
-      }
-
-      applyStateToUI();
-
-      if (state.step === "checkin" && state.players.length > 0) {
-        showSnackbar("已从本地恢复签到进度", 2400);
-      } else if (
-        state.step === "import" &&
-        (state.clubText || state.relayText)
-      ) {
-        showSnackbar("已恢复上次粘贴的文本", 2200);
-      }
-    } else {
-      applyStateToUI(true);
+    const preferences = loadBrowserPreferences();
+    if (preferences && preferences.ui && typeof preferences.ui === "object") {
+      state.ui = { ...(state.ui || {}), ...preferences.ui };
     }
+    if (preferences && Number(preferences.viewedRound) > 0 && state.scoreHelper) {
+      state.scoreHelper.activeRound = Math.trunc(Number(preferences.viewedRound));
+    }
+    if (preferences && ["import", "checkin", "score-helper"].includes(preferences.viewedStep)) {
+      state.step = preferences.viewedStep;
+    }
+    applyStateToUI(true);
 
     startLocalSync();
     if (LOCAL_SYNC_ENABLED) {

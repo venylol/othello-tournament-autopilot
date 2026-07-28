@@ -9,6 +9,9 @@
     LOCAL_PAIRINGS = [];
   }
   var DOWNLOAD_PNG = __FTD_SCORE_DOWNLOAD_PNG__;
+  __FTD_SCORE_PNG_RENDERER_SOURCE__
+  var SCORE_PNG_RENDERER = window.FTD_SCORE_PNG_RENDERER;
+  if (!SCORE_PNG_RENDERER) throw new Error("FTD score PNG renderer missing");
 
   function norm(value) {
     return String(value || "").replace(/\s+/g, " ").trim();
@@ -43,153 +46,8 @@
     return normKey(value) === "bye";
   }
 
-  function splitName(value) {
-    var parts = norm(value).split(" ");
-    if (parts.length <= 1) return [norm(value)];
-    return [parts[0], parts.slice(1).join(" ")];
-  }
-
-  function drawChinaFlag(ctx, x, y, w, h) {
-    ctx.save();
-    ctx.fillStyle = "#ee1c25";
-    ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = "#ffde00";
-    function star(cx, cy, r) {
-      ctx.beginPath();
-      for (var i = 0; i < 10; i += 1) {
-        var angle = -Math.PI / 2 + (i * Math.PI) / 5;
-        var radius = i % 2 === 0 ? r : r * 0.42;
-        ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
-      }
-      ctx.closePath();
-      ctx.fill();
-    }
-    star(x + w * 0.22, y + h * 0.28, h * 0.14);
-    star(x + w * 0.42, y + h * 0.16, h * 0.05);
-    star(x + w * 0.50, y + h * 0.30, h * 0.05);
-    star(x + w * 0.50, y + h * 0.46, h * 0.05);
-    star(x + w * 0.40, y + h * 0.58, h * 0.05);
-    ctx.restore();
-  }
-
-  function drawDisc(ctx, x, y, r, color) {
-    ctx.save();
-    var gradient = ctx.createRadialGradient(x - r * 0.4, y - r * 0.5, r * 0.1, x, y, r);
-    if (color === "white") {
-      gradient.addColorStop(0, "#ffffff");
-      gradient.addColorStop(1, "#d8d8d8");
-      ctx.shadowColor = "rgba(255,255,255,.34)";
-    } else {
-      gradient.addColorStop(0, "#111111");
-      gradient.addColorStop(1, "#000000");
-      ctx.shadowColor = "rgba(255,255,255,.28)";
-    }
-    ctx.shadowBlur = 8;
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = color === "white" ? "#f4f4f4" : "#666";
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function drawName(ctx, name, x, y, align) {
-    var lines = splitName(name);
-    ctx.save();
-    ctx.textAlign = align || "left";
-    ctx.fillStyle = "#b7b7b7";
-    ctx.font = "700 22px Arial, sans-serif";
-    ctx.fillText(lines[0] || "", x, y);
-    if (lines.length > 1) {
-      ctx.font = "600 22px Arial, sans-serif";
-      ctx.fillText(lines[1] || "", x, y + 34);
-    }
-    ctx.restore();
-  }
-
   function hasPairingScore(row) {
-    return Number.isFinite(Number(row && row.blackScore)) && Number.isFinite(Number(row && row.whiteScore));
-  }
-
-  function drawScoreDisc(ctx, x, y, r, color, value) {
-    drawDisc(ctx, x, y, r, color);
-    ctx.save();
-    ctx.fillStyle = color === "white" ? "#111111" : "#ffffff";
-    ctx.strokeStyle = color === "white" ? "rgba(255,255,255,.55)" : "rgba(0,0,0,.55)";
-    ctx.lineWidth = color === "white" ? 2 : 3;
-    ctx.font = "900 21px Arial, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.strokeText(String(Math.trunc(Number(value))), x, y + 1);
-    ctx.fillText(String(Math.trunc(Number(value))), x, y + 1);
-    ctx.restore();
-  }
-
-  function buildPairingsCanvas(pairings, round) {
-    var scale = Math.max(1, Math.min(3, window.devicePixelRatio || 2));
-    var width = 1040;
-    var headerHeight = 122;
-    var rowHeight = 92;
-    var footerHeight = 24;
-    var height = headerHeight + rowHeight * pairings.length + footerHeight;
-    var canvas = document.createElement("canvas");
-    canvas.width = Math.round(width * scale);
-    canvas.height = Math.round(height * scale);
-    canvas.style.width = width + "px";
-    canvas.style.height = height + "px";
-    var ctx = canvas.getContext("2d");
-    ctx.scale(scale, scale);
-
-    ctx.fillStyle = "#211f1d";
-    ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = "#2b2927";
-    ctx.fillRect(0, 0, width, headerHeight);
-    ctx.fillStyle = "#ffffff";
-    ctx.textAlign = "center";
-    ctx.font = "700 34px Arial, sans-serif";
-    ctx.fillText("Round " + (round == null ? "" : round), width / 2, 74);
-    ctx.strokeStyle = "#6d6a66";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, headerHeight - 1);
-    ctx.lineTo(width, headerHeight - 1);
-    ctx.stroke();
-
-    for (var i = 0; i < pairings.length; i += 1) {
-      var row = pairings[i];
-      var top = headerHeight + i * rowHeight;
-      ctx.fillStyle = i % 2 === 0 ? "#242321" : "#211f1d";
-      ctx.fillRect(10, top, width - 20, rowHeight);
-      ctx.strokeStyle = "#33302d";
-      ctx.beginPath();
-      ctx.moveTo(10, top + rowHeight);
-      ctx.lineTo(width - 10, top + rowHeight);
-      ctx.stroke();
-
-      ctx.fillStyle = "#e8e8e8";
-      ctx.textAlign = "center";
-      ctx.font = "700 22px Arial, sans-serif";
-      ctx.fillText(String(row.table || i + 1), 48, top + 55);
-
-      drawChinaFlag(ctx, 84, top + 30, 43, 30);
-      drawName(ctx, row.black || "", 138, top + 38, "left");
-
-      if (hasPairingScore(row)) {
-        drawScoreDisc(ctx, 455, top + 46, 36, "black", row.blackScore);
-        ctx.fillStyle = "#e8e8e8";
-        ctx.font = "800 22px Arial, sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText("-", 520, top + 54);
-        drawScoreDisc(ctx, 585, top + 46, 36, "white", row.whiteScore);
-      }
-
-      drawChinaFlag(ctx, 686, top + 30, 43, 30);
-      drawName(ctx, row.white || "", 740, top + 38, "left");
-    }
-
-    return canvas;
+    return SCORE_PNG_RENDERER.hasPairingScore(row);
   }
 
   function downloadBlob(blob, filename) {
@@ -354,22 +212,19 @@
         var local = localByTable.get(table) || {};
         var blackName = local.black || playerName(pair[0]);
         var whiteName = local.white || playerName(pair[1]);
-        var blackBye = isByeName(blackName);
-        var whiteBye = isByeName(whiteName);
         var score = Number(pair[0] && pair[0].score);
         var written = writtenByTable.get(table);
-        var localHasScore = hasPairingScore(local) && Math.trunc(Number(local.blackScore)) + Math.trunc(Number(local.whiteScore)) === 64;
-        var hasScore = !blackBye && !whiteBye && Number.isFinite(score) && Math.trunc(score) !== 0;
-        return {
+        return SCORE_PNG_RENDERER.buildScoreRow({
           table: table,
           black: blackName,
           white: whiteName,
-          blackScore: blackBye || whiteBye ? (blackBye ? 31 : 33) : written ? written.blackScore : localHasScore ? Math.trunc(Number(local.blackScore)) : hasScore ? Math.trunc(score) : null,
-          whiteScore: blackBye || whiteBye ? (whiteBye ? 31 : 33) : written ? written.whiteScore : localHasScore ? Math.trunc(Number(local.whiteScore)) : hasScore ? 64 - Math.trunc(score) : null,
-        };
+          written: written || null,
+          local: local,
+          ftdBlackScore: score,
+        });
       });
       var label = groupLabel(groupResults, targetRound);
-      downloadCanvasPng(buildPairingsCanvas(pngPairings, label), "ftd-" + label.replace("/", "-") + "-scores.png");
+      downloadCanvasPng(SCORE_PNG_RENDERER.buildPairingsCanvas(pngPairings, label), "ftd-" + label.replace("/", "-") + "-scores.png");
     }
   }
   console.log("done: wrote " + RESULTS.length + " ready result(s)");

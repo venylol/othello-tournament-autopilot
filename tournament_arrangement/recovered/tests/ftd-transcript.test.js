@@ -7,8 +7,8 @@ const vm = require("vm");
 const transcript = require("../ftd-transcript-shared.js");
 const {
   prepareFtdTranscriptPacket,
-  mergeScoreHelperFtdPairingsForFrontendPost,
 } = require("../local-server.js");
+const COMMANDS = require("../state-commands.js");
 const {
   sanitizeLoadedState,
   renderFtdTranscriptImportTag,
@@ -241,28 +241,54 @@ async function run() {
         confirmedBy: "user",
       },
     })]);
-    const incoming = makeState([makePairing(1, "ready", "merge-game", {
-      blackScore: 41,
-      whiteScore: 23,
-      lastEditedBy: "user",
-      lastEditedAt: 9001,
-    })]);
-    const merged = mergeScoreHelperFtdPairingsForFrontendPost(incoming, current, {
-      preferIncomingUserIntent: true,
-    }).state.scoreHelper.rounds[0].ftdPairings[0];
+    const migrated = COMMANDS.migrateState(current);
+    const row = migrated.scoreHelper.rounds[0].ftdPairings[0];
+    const edited = COMMANDS.applyCommand(migrated, {
+      commandId: "transcript-score-edit",
+      type: "entities.mutate",
+      actor: "user",
+      payload: { mutations: [{
+        op: "patch",
+        target: { kind: "scoreRow", id: row.entityId },
+        expectedRevision: row.entityRevision,
+        set: { blackScore: 41, whiteScore: 23, lastEditedBy: "user", lastEditedAt: 9001 },
+      }] },
+    });
+    const merged = edited.state.scoreHelper.rounds[0].ftdPairings[0];
     assert.strictEqual(merged.ftdTranscriptImport.oqGameId, "merge-game");
 
-    const protectedIncoming = makeState([makePairing(1, "imported", "merge-game", {
-      ftdTranscriptImport: {
-        status: "imported",
-        oqGameId: "merge-game",
-        confirmedAt: 10000,
-        confirmedBy: "user",
-      },
-    })]);
-    const protectedMerged = mergeScoreHelperFtdPairingsForFrontendPost(protectedIncoming, current, {
-      preferIncomingUserIntent: true,
-    }).state.scoreHelper.rounds[0].ftdPairings[0];
+    const transcriptPatch = {
+      status: "imported",
+      oqGameId: "merge-game",
+      confirmedAt: 10000,
+      confirmedBy: "user",
+    };
+    assert.throws(
+      () => COMMANDS.applyCommand(edited.state, {
+        commandId: "stale-transcript-import",
+        type: "entities.mutate",
+        actor: "automation",
+        payload: { mutations: [{
+          op: "patch",
+          target: { kind: "scoreRow", id: row.entityId },
+          expectedRevision: row.entityRevision,
+          set: { ftdTranscriptImport: transcriptPatch },
+        }] },
+      }),
+      (error) => error.code === "entity-conflict",
+    );
+    const imported = COMMANDS.applyCommand(edited.state, {
+      commandId: "fresh-transcript-import",
+      type: "entities.mutate",
+      actor: "automation",
+      payload: { mutations: [{
+        op: "patch",
+        target: { kind: "scoreRow", id: row.entityId },
+        expectedRevision: merged.entityRevision,
+        set: { ftdTranscriptImport: transcriptPatch },
+      }] },
+    });
+    const protectedMerged = imported.state.scoreHelper.rounds[0].ftdPairings[0];
     assert.strictEqual(protectedMerged.status, "ready");
     assert.strictEqual(protectedMerged.ftdTranscriptImport.confirmedAt, 10000);
   }

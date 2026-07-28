@@ -12,6 +12,7 @@ Typical use:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -31,6 +33,7 @@ from typing import Any
 
 import agent_checkin_bridge
 import mcp_server
+import local_state_commands
 from decode_image import decrypt_dat_file, extract_md5_from_packed_info, is_v2_format
 
 
@@ -48,6 +51,7 @@ ROSTER_MATCHER = ROOT / "agent_roster_matcher.js"
 FRONTEND_STATE_API = os.environ.get("CHECKIN_FRONTEND_STATE_API", "http://127.0.0.1:4174/api/state").strip() or "http://127.0.0.1:4174/api/state"
 CHINA_TZ = timezone(timedelta(hours=8))
 SCORE_SCAN_CACHE_DELAY_SECONDS = 60
+_FRONTEND_STATE_BASE: dict[str, Any] | None = None
 BLOCKING_SCORE_CHECKS = [
     "the two visible screenshot OQ IDs cannot both be matched to the same current-round FTD table",
     "a visible screenshot OQ ID is clearly outside the uniquely matched table's two expected accounts",
@@ -421,10 +425,12 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def read_frontend_state(state_path: Path, direct_file: bool) -> dict[str, Any]:
+    global _FRONTEND_STATE_BASE
     if direct_file:
         state = read_json(state_path)
         if not isinstance(state, dict):
             raise HelperError(f"Invalid frontend state: {state_path}")
+        _FRONTEND_STATE_BASE = copy.deepcopy(state)
         return state
     try:
         with urllib.request.urlopen(f"{FRONTEND_STATE_API}?t={int(time.time() * 1000)}", timeout=3) as response:
@@ -438,28 +444,38 @@ def read_frontend_state(state_path: Path, direct_file: bool) -> dict[str, Any]:
     state = payload.get("state")
     if not isinstance(state, dict):
         raise HelperError("local sync API returned no state object")
+    _FRONTEND_STATE_BASE = copy.deepcopy(state)
     return state
 
 
 def write_frontend_state(state_path: Path, state: dict[str, Any], direct_file: bool) -> str:
+    global _FRONTEND_STATE_BASE
     if direct_file:
+        if state_path.resolve() == DEFAULT_FRONTEND_STATE_PATH.resolve():
+            raise HelperError("--direct-file is fixture/test-only and cannot write the live shared state; use the command API")
         write_json(state_path, state)
+        _FRONTEND_STATE_BASE = copy.deepcopy(state)
         return str(state_path)
-    body = json.dumps({"source": "agent-score-helper", "state": state}, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        FRONTEND_STATE_API,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    if _FRONTEND_STATE_BASE is None:
+        raise HelperError("state command base is missing; read the authoritative state before writing")
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise HelperError("local sync API write failed; score item was not written") from exc
-    if not payload.get("ok"):
-        raise HelperError(f"local sync API write failed: {payload}")
-    return FRONTEND_STATE_API
+        payload = local_state_commands.submit_diff(
+            FRONTEND_STATE_API,
+            _FRONTEND_STATE_BASE,
+            state,
+            actor="agent",
+            source="agent-score-helper",
+            timeout=8,
+        )
+    except local_state_commands.StateCommandConflict as exc:
+        raise HelperError(f"local sync entity conflict; stale result skipped: {exc.payload}") from exc
+    except (OSError, urllib.error.URLError, RuntimeError, json.JSONDecodeError) as exc:
+        raise HelperError("local sync command failed; score item was not written") from exc
+    if payload.get("changed"):
+        read_frontend_state(state_path, False)
+    else:
+        _FRONTEND_STATE_BASE = copy.deepcopy(state)
+    return local_state_commands.command_url(FRONTEND_STATE_API)
 
 
 def mark_oq_round_score_update_request(round_no: int, source: str) -> None:
@@ -2833,6 +2849,7 @@ def make_oq_pending_item(
             "table": table,
             "reviewAction": "核对是否采用该 OQ 对局；确认后处理 pending。",
             "lastEditedBy": "script",
+            "resultSource": "oq-auto",
             "lastEditedAt": int(time.time() * 1000),
         },
         round_no,
@@ -2850,6 +2867,29 @@ def pairing_ready_snapshot(pairing: dict[str, Any]) -> dict[str, Any]:
         "lastEditedBy": pairing.get("lastEditedBy") or "",
         "oqAutoAudit": pairing.get("oqAutoAudit") if isinstance(pairing.get("oqAutoAudit"), dict) else None,
     }
+
+
+def resolved_oq_candidate_keys_for_table(target_round: dict[str, Any], table: Any) -> set[str]:
+    table_text = normalize_text_like(table)
+    keys: set[str] = set()
+    for item in target_round.get("pending") if isinstance(target_round.get("pending"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("resolvedByReferee") is not True and item.get("resolutionStatus") != "resolved":
+            continue
+        if normalize_text_like(item.get("pendingTable") or item.get("table")) != table_text:
+            continue
+        selected = normalize_text_like(item.get("selectedSourceKey"))
+        if selected:
+            keys.add(selected.removeprefix("oq-auto:"))
+        detail = item.get("oqPendingDetail") if isinstance(item.get("oqPendingDetail"), dict) else {}
+        for candidate in detail.get("candidates") if isinstance(detail.get("candidates"), list) else []:
+            if not isinstance(candidate, dict):
+                continue
+            key = normalize_text_like(candidate.get("candidateKey") or candidate.get("gameId"))
+            if key:
+                keys.add(key)
+    return keys
 
 
 def upsert_oq_followup_pending(
@@ -3060,6 +3100,7 @@ def apply_oq_candidate_to_pairing(
     pairing["sourceLocalId"] = ""
     pairing["imagePath"] = ""
     pairing["resultKind"] = "oq-auto"
+    pairing["resultSource"] = "oq-auto"
     pairing["resultTime"] = result_time
     pairing["resultSortKey"] = result_sort_key
     pairing["updatedAt"] = edited_at
@@ -3183,6 +3224,9 @@ def update_round_oq_scores(
         pairing = table_info.get("pairing") if isinstance(table_info.get("pairing"), dict) else {}
         candidates = collect_table_oq_candidates(table_info, games_by_account, round_start, window_end)
         new_candidates = filter_existing_pairing_oq_candidates(pairing, candidates)
+        resolved_candidate_keys = resolved_oq_candidate_keys_for_table(target_round, table_info.get("table"))
+        if resolved_candidate_keys:
+            new_candidates = [candidate for candidate in new_candidates if oq_candidate_key(candidate.get("entry")) not in resolved_candidate_keys]
         has_user_pending = round_has_user_pending_for_table(target_round, table_info.get("table"))
         if has_user_pending:
             if should_create_oq_pending(new_candidates, table_info):
@@ -6986,6 +7030,8 @@ def ensure_frontend_score_helper(state: dict[str, Any], round_count: int) -> dic
         src = existing_rounds[i] if i < len(existing_rounds) and isinstance(existing_rounds[i], dict) else {}
         rounds.append(
             {
+                "entityId": str(src.get("entityId") or ""),
+                "entityRevision": max(0, int(src.get("entityRevision") or 0)),
                 "round": i + 1,
                 "stage": str(src.get("stage") or "preliminary"),
                 "roundStartAt": str(src.get("roundStartAt") or ""),
@@ -6997,6 +7043,8 @@ def ensure_frontend_score_helper(state: dict[str, Any], round_count: int) -> dic
             }
         )
     helper = {
+        "entityId": str(helper.get("entityId") or ""),
+        "entityRevision": max(0, int(helper.get("entityRevision") or 0)),
         "version": 2,
         "preliminaryRoundCount": max(
             1,
@@ -7010,7 +7058,7 @@ def ensure_frontend_score_helper(state: dict[str, Any], round_count: int) -> dic
         "autoRoundCountPlayerCount": helper.get("autoRoundCountPlayerCount"),
         "activeRound": max(1, min(count, int(helper.get("activeRound") or 1))),
         "rounds": rounds,
-        "updatedAt": int(time.time() * 1000),
+        "updatedAt": helper.get("updatedAt"),
     }
     state["scoreHelper"] = helper
     return helper
@@ -7027,6 +7075,8 @@ def normalize_score_item_for_frontend(item: dict[str, Any], round_no: int) -> di
     if loser_count is None:
         loser_count = item.get("opponentScore")
     out = {
+        "entityId": str(item.get("entityId") or f"pending:client:{uuid.uuid4().hex}"),
+        "entityRevision": max(0, int(item.get("entityRevision") or 0)),
         "id": str(item.get("id") or f"agent-score-{int(time.time() * 1000)}-{os.urandom(3).hex()}"),
         "round": round_no,
         "sourceTime": score_result_time_text(item.get("sourceTime") or item.get("time") or ""),
@@ -7047,6 +7097,12 @@ def normalize_score_item_for_frontend(item: dict[str, Any], round_no: int) -> di
         "confidence": str(item.get("confidence") or ""),
         "lastEditedBy": str(item.get("lastEditedBy") or "agent"),
         "lastEditedAt": item.get("lastEditedAt") or edited_at,
+        "resultSource": str(item.get("resultSource") or ""),
+        "resolutionStatus": str(item.get("resolutionStatus") or ("resolved" if item.get("resolvedByReferee") is True else "open")),
+        "resolvedByReferee": item.get("resolvedByReferee") is True,
+        "resolvedAt": item.get("resolvedAt"),
+        "resolvedByCommandId": str(item.get("resolvedByCommandId") or ""),
+        "selectedSourceKey": str(item.get("selectedSourceKey") or ""),
     }
     for key in ("pendingKind", "pendingTable", "table", "reviewAction"):
         if item.get(key) not in (None, ""):
@@ -7058,6 +7114,8 @@ def normalize_score_item_for_frontend(item: dict[str, Any], round_no: int) -> di
             out[key] = max(0, int(out[key]))
         except (TypeError, ValueError):
             out[key] = None
+    if not out["sourceTime"]:
+        out.pop("sourceTime", None)
     return out
 
 
@@ -7086,6 +7144,17 @@ def push_pending_item_to_round(
 ) -> dict[str, Any]:
     pending_item = normalize_pending_score_item(item, round_no, wechat_sender)
     match_keys = pending_item_match_keys(pending_item)
+    existing_pending = target_round.get("pending") if isinstance(target_round.get("pending"), list) else []
+    resolved = next((entry for entry in existing_pending if isinstance(entry, dict)
+                     and (entry.get("resolvedByReferee") is True or entry.get("resolutionStatus") == "resolved")
+                     and pending_item_match_keys(entry) & match_keys), None)
+    if resolved is not None:
+        return {
+            "pending": resolved,
+            "skippedResolved": True,
+            "dedupedPendingCount": 0,
+            "dedupedPending": [],
+        }
     removed = remove_matching_pending_items(target_round, match_keys)
     target_round["pending"].insert(0, pending_item)
     return {

@@ -2,7 +2,7 @@
 
 const assert = require("assert");
 const registration = require("../ftd-player-registration-shared.js");
-const { mergeStateForApiPost } = require("../local-server.js");
+const COMMANDS = require("../state-commands.js");
 
 const players = [
   { id: 1, displayName: "Ren Wutong", account: "wutong", group: "open" },
@@ -138,30 +138,36 @@ async function run() {
     players,
     ftdPlayerRegistration: { ...base, updatedAt: "2026-07-27T00:10:00.000Z" },
   };
-  const staleIncoming = {
-    ...currentState,
-    ftdPlayerRegistration: { ...base, rows: [], updatedAt: "2026-07-27T00:00:00.000Z" },
-  };
-  const merged = mergeStateForApiPost(staleIncoming, currentState, {
-    source: "frontend",
-    baseRevision: 1,
-    currentRevision: 2,
+  const commandState = COMMANDS.migrateState({ ...currentState, competitionName: "current name" });
+  const registrationEntity = commandState.ftdPlayerRegistration;
+  const agentResult = COMMANDS.applyCommand(commandState, {
+    commandId: "agent-registration-result",
+    type: "entities.mutate",
+    actor: "agent",
+    payload: { mutations: [{
+      op: "patch",
+      target: { kind: "registrationMetadata", id: registrationEntity.entityId },
+      expectedRevision: registrationEntity.entityRevision,
+      set: { resolverBatchId: "agent-new" },
+    }] },
   });
-  assert.strictEqual(merged.preservedFtdPlayerRegistration, true);
-  assert.strictEqual(merged.state.ftdPlayerRegistration.rows.length, base.rows.length);
-
-  const agentIncoming = {
-    ...staleIncoming,
-    competitionName: "stale name",
-    ftdPlayerRegistration: { ...base, resolverBatchId: "agent-new" },
-  };
-  const agentMerged = mergeStateForApiPost(agentIncoming, { ...currentState, competitionName: "current name" }, {
-    source: "agent-resolve-ftd-players",
-    baseRevision: 1,
-    currentRevision: 2,
-  });
-  assert.strictEqual(agentMerged.state.competitionName, "current name");
-  assert.strictEqual(agentMerged.state.ftdPlayerRegistration.resolverBatchId, "agent-new");
+  assert.strictEqual(agentResult.state.competitionName, "current name");
+  assert.strictEqual(agentResult.state.ftdPlayerRegistration.resolverBatchId, "agent-new");
+  assert.strictEqual(agentResult.state.ftdPlayerRegistration.rows.length, base.rows.length);
+  assert.throws(
+    () => COMMANDS.applyCommand(agentResult.state, {
+      commandId: "stale-registration-result",
+      type: "entities.mutate",
+      actor: "user",
+      payload: { mutations: [{
+        op: "patch",
+        target: { kind: "registrationMetadata", id: registrationEntity.entityId },
+        expectedRevision: registrationEntity.entityRevision,
+        set: { rows: [] },
+      }] },
+    }),
+    (error) => error.code === "entity-conflict",
+  );
 }
 
 run().then(

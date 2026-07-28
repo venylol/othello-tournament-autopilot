@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const STATE_COMMANDS = require("../tournament_arrangement/recovered/state-commands.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -619,13 +620,16 @@ async function getState(api) {
 }
 
 async function postState(api, state, revision, registration) {
-  const response = await fetch(api, {
+  const nextState = { ...state, ftdPlayerRegistration: registration, savedAt: Date.now() };
+  const diff = STATE_COMMANDS.diffState(state, nextState);
+  const response = await fetch(`${api.replace(/\/+$/, "")}/commands`, {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8", Accept: "application/json" },
     body: JSON.stringify({
-      source: "agent-resolve-ftd-players",
-      baseRevision: revision,
-      state: { ...state, ftdPlayerRegistration: registration, savedAt: Date.now() },
+      commandId: `agent-resolve-ftd-players-${registration.resolverBatchId}`,
+      type: "entities.mutate",
+      actor: "agent",
+      payload: { mutations: diff.mutations },
     }),
   });
   const payload = await response.json().catch(() => null);
@@ -633,11 +637,12 @@ async function postState(api, state, revision, registration) {
     const detail = payload && (payload.detail || payload.error);
     throw new Error(`本地同步 API 写入失败：${detail || `HTTP ${response.status}`}`);
   }
-  const written = payload.state && payload.state.ftdPlayerRegistration;
+  const latest = await getState(api);
+  const written = latest.state && latest.state.ftdPlayerRegistration;
   if (!written || written.resolverBatchId !== registration.resolverBatchId) {
     throw new Error("本地同步 API 返回状态未包含本次 FTD Player 核对批次");
   }
-  return payload;
+  return { ...payload, state: latest.state, revision: latest.revision };
 }
 
 async function main(argv) {

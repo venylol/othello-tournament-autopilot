@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -53,7 +53,8 @@
     <script defer src="./ftd-transcript-shared.js?v=ftd-player-registration.3"></script>
     <script defer src="./ftd-round-shared.js?v=ftd-player-registration.3"></script>
     <script defer src="./ftd-player-registration-shared.js?v=ftd-player-registration.3"></script>
-    <script defer src="./app.js?v=ftd-player-registration.3"></script>
+    <script defer src="./frontend-state-sync.js?v=entity-commands.2"></script>
+    <script defer src="./app.js?v=entity-commands.2"></script>
   </head>
 
   <body>
@@ -740,7 +741,7 @@ Wu Jianxiang"
                 FTD 只读探测
               </button>
               <button class="btn btn-filled" id="btn-ftd-autopilot-start" type="button">
-                本轮自律
+                AP
               </button>
               <button class="btn btn-tonal" id="btn-ftd-autopilot-pause" type="button" disabled>
                 暂停
@@ -772,7 +773,7 @@ Wu Jianxiang"
             </div>
 
             <div class="ftd-autopilot-status" id="ftd-autopilot-status" role="status" aria-live="polite">
-              <strong>本轮自律：</strong><span>未连接</span>
+              <strong>AP：</strong><span>未连接</span>
             </div>
 
             <div class="score-helper__toolbar">

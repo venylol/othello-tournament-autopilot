@@ -2,8 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const require = createRequire(import.meta.url);
+const STATE_COMMANDS = require(path.join(repoRoot, "tournament_arrangement", "recovered", "state-commands.js"));
 const defaultStatePath = path.join(repoRoot, "tournament_arrangement", "recovered", "data", "checkin-state.json");
 const defaultConfigPath = path.join(repoRoot, "cloudflare-map-collab", "map-collab.config.json");
 const args = parseArgs(process.argv.slice(2));
@@ -272,20 +275,24 @@ async function writeStateViaLocalApi(mapping) {
       savedAt: Date.now(),
     },
   };
-  const saveResponse = await fetch(localApi, {
+  const diff = STATE_COMMANDS.diffState(current.state, nextState);
+  const saveResponse = await fetch(`${localApi}/commands`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      baseRevision: current.revision,
-      state: nextState,
-      source: "map-collab-overwrite-local",
+      commandId: `map-collab-pull-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      type: "entities.mutate",
+      actor: "script",
+      payload: { mutations: diff.mutations },
     }),
   });
   const saved = await saveResponse.json().catch(() => null);
   if (!saveResponse.ok || !saved || saved.ok !== true) {
     throw new Error(`Local sync write failed: HTTP ${saveResponse.status} ${JSON.stringify(saved)}`);
   }
-  const savedMapping = saved.state && saved.state.ftdPlayerAccountMapping;
+  const verifyResponse = await fetch(localApi);
+  const verified = await verifyResponse.json().catch(() => null);
+  const savedMapping = verified && verified.state && verified.state.ftdPlayerAccountMapping;
   const expectedRemote = mapping && mapping.remoteSync;
   const savedRemote = savedMapping && savedMapping.remoteSync;
   if (

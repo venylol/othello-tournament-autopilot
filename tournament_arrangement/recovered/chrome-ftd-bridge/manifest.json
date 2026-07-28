@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "本轮自律 · FTD 本地桥",
-  "version": "0.2.0",
+  "name": "AP · FTD 本地桥",
+  "version": "0.3.4",
   "description": "仅连接 Flip the Disc 与 127.0.0.1 本地比赛协调器。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnGQRPlGY3VNlYV5+2tFhONP95MOLTMu31WW7pSu6H5TnrWHyX7tvgQL7PywJ5xnSW9uUbYCzhoEoe24H8InbX3xNHUXGlqlJdIuij1KVz4aU3TydcjtqJF5mJ4JDL7M4cSOimGky3QxAjc8Y65up03POaF3n1X7QuJMnyX/r8oZUp40Qg1mSlhGOBBFV7Bdv7X+BcrCylNBrk4sNkNzmCMvhfV1++78wk9aBR2RSVuyjGXm2WVdc8AuuF6ymQI6TMgOOykjEL8iKKsPw8xoCoHg97QvSD/P4C5q+tW63/XML67MVIyII56SQBTMyJNz5k6Wsx8iYhAyND3CJzhQKKwIDAQAB",
   "permissions": ["downloads"],
@@ -14,13 +14,18 @@
     "service_worker": "service-worker.js"
   },
   "action": {
-    "default_title": "本轮自律 · FTD 本地桥",
+    "default_title": "AP · FTD 本地桥",
     "default_popup": "popup.html"
   },
   "content_scripts": [
     {
       "matches": ["https://flipthedisc.com/*", "https://www.flipthedisc.com/*"],
-      "js": ["vendor/socket.io.min.js", "page-bridge.js"],
+      "js": [
+        "vendor/socket.io.min.js",
+        "ftd-pairing-png-renderer.js",
+        "ftd-score-png-renderer.js",
+        "page-bridge.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },

@@ -15,6 +15,7 @@
     "writeScore",
     "writeTranscript",
     "readbackRound",
+    "renderPairingsImage",
     "renderVerifiedRoundImage",
   ]);
   const COMMON_KEYS = [
@@ -34,6 +35,7 @@
       "transcript", "oqGameId", "localStatus", "localDirty",
       "localPending", "localManualLocked", "localRevision", "allowFinishedRoundWrite",
     ]),
+    renderPairingsImage: COMMON_KEYS.concat(["snapshot", "filename"]),
     renderVerifiedRoundImage: COMMON_KEYS.concat(["snapshot", "filename"]),
   };
   let relayNonce = "";
@@ -86,9 +88,13 @@
       if (!validTranscript(command.transcript) || !validId(command.oqGameId, 300)) throw bridgeError("invalid-transcript", "棋谱或 OQ game ID 无效");
       validateLocalWriteGuard(command);
     }
+    if (command.action === "renderPairingsImage") {
+      if (!Array.isArray(command.snapshot) || !command.snapshot.length || command.snapshot.length > 256) throw bridgeError("invalid-snapshot", "配对图快照无效");
+      if (!/^ftd-[A-Za-z0-9_.-]+-pairings\.png$/.test(command.filename)) throw bridgeError("invalid-filename", "配对图文件名无效");
+    }
     if (command.action === "renderVerifiedRoundImage") {
       if (!Array.isArray(command.snapshot) || !command.snapshot.length || command.snapshot.length > 256) throw bridgeError("invalid-snapshot", "最终回读快照无效");
-      if (!/^ftd-[A-Za-z0-9_.-]+-scores-verified\.png$/.test(command.filename)) throw bridgeError("invalid-filename", "PNG 文件名无效");
+      if (!/^ftd-[A-Za-z0-9_.-]+-scores-(?:halfway-verified|verified)\.png$/.test(command.filename)) throw bridgeError("invalid-filename", "比分图文件名无效");
     }
     return command;
   }
@@ -457,73 +463,76 @@
     };
   }
 
-  function fitText(context, value, width) {
-    const raw = text(value, 240);
-    if (context.measureText(raw).width <= width) return raw;
-    let out = raw;
-    while (out.length > 1 && context.measureText(`${out}…`).width > width) out = out.slice(0, -1);
-    return `${out}…`;
+  async function handleRenderPairingsImage(command) {
+    assertWriteTransportProof(command);
+    const rows = command.snapshot.map((item) => {
+      if (!item || typeof item !== "object") throw bridgeError("invalid-snapshot-row", "配对图快照行无效");
+      const label = text(item.label, 80);
+      const black = text(item.black, 240);
+      const white = text(item.white, 240);
+      const password = text(item.password, 20);
+      if (!label || !black || !white || !/^\d{4}$/.test(password)) throw bridgeError("invalid-pairing-image-row", "配对图行缺少台号、选手或四位密码");
+      return {
+        table: /^#\d+$/.test(label) ? Number(label.slice(1)) : label,
+        black,
+        white,
+        blackAccount: text(item.blackAccount, 120),
+        whiteAccount: text(item.whiteAccount, 120),
+      };
+    });
+    const renderer = window.FTD_PAIRING_PNG_RENDERER;
+    if (!renderer || typeof renderer.buildPairingsCanvas !== "function") throw bridgeError("pairing-renderer-missing", "FTD 配对 PNG 共享生成器未加载");
+    const payload = {
+      round: command.localRound,
+      stage: command.localStage === "semifinal" ? "SF" : command.localStage === "finals" ? "finals" : "",
+      blankPairings: rows,
+      pairings: rows,
+    };
+    const canvas = renderer.buildPairingsCanvas(payload);
+    const dataUrl = canvas.toDataURL("image/png");
+    return { filename: command.filename, dataUrl, pngSha256: await sha256Hex(dataUrl), rowCount: rows.length, renderedAt: new Date().toISOString() };
   }
 
   async function handleRenderImage(command) {
     assertWriteTransportProof(command);
     const rows = command.snapshot.map((item) => {
       if (!item || typeof item !== "object") throw bridgeError("invalid-snapshot-row", "最终快照行无效");
-      const blackScore = Number(item.blackScore);
-      const whiteScore = Number(item.whiteScore);
-      if (!Number.isInteger(blackScore) || !Number.isInteger(whiteScore) || blackScore + whiteScore !== 64 || item.verified !== true) {
-        throw bridgeError("unverified-image-row", "PNG 只能使用最终 FTD 已验证比分");
+      const label = text(item.label, 80);
+      const black = text(item.black, 240);
+      const white = text(item.white, 240);
+      if (!label || !black || !white) throw bridgeError("invalid-score-image-row", "比分图行缺少台号或选手");
+      let blackScore = item.blackScore == null ? null : Number(item.blackScore);
+      let whiteScore = item.whiteScore == null ? null : Number(item.whiteScore);
+      const ftdBlackScore = item.ftdBlackScore == null ? null : Number(item.ftdBlackScore);
+      if (ftdBlackScore != null && !Number.isInteger(ftdBlackScore)) throw bridgeError("invalid-ftd-image-score", "比分图 FTD 回读比分无效");
+      const blackBye = black.toLowerCase() === "bye";
+      const whiteBye = white.toLowerCase() === "bye";
+      if (blackBye || whiteBye) {
+        blackScore = blackBye ? 31 : 33;
+        whiteScore = whiteBye ? 31 : 33;
+      } else if (item.verified === true) {
+        if (!Number.isInteger(blackScore) || !Number.isInteger(whiteScore) || blackScore + whiteScore !== 64) {
+          throw bridgeError("unverified-image-row", "PNG 的已登记比分必须经过 FTD 精确回读");
+        }
+      } else if (item.verified !== false || blackScore != null || whiteScore != null) {
+        throw bridgeError("unverified-image-row", "PNG 的未完成桌只能留空");
       }
       return {
-        label: text(item.label, 80),
-        black: text(item.black, 240),
-        white: text(item.white, 240),
-        blackScore,
-        whiteScore,
+        table: /^#\d+$/.test(label) ? Number(label.slice(1)) : label,
+        black,
+        white,
+        written: item.verified === true ? { blackScore, whiteScore } : null,
+        local: null,
+        ftdBlackScore,
       };
     });
-    const width = 1040;
-    const headerHeight = 122;
-    const rowHeight = 92;
-    const height = headerHeight + rows.length * rowHeight + 24;
-    const scale = Math.max(1, Math.min(3, window.devicePixelRatio || 2));
-    const canvas = document.createElement("canvas");
-    canvas.width = width * scale;
-    canvas.height = height * scale;
-    const context = canvas.getContext("2d");
-    context.scale(scale, scale);
-    context.fillStyle = "#211f1d";
-    context.fillRect(0, 0, width, height);
-    context.fillStyle = "#2b2927";
-    context.fillRect(0, 0, width, headerHeight);
-    context.fillStyle = "#fff";
-    context.textAlign = "center";
-    context.font = "700 34px Arial, sans-serif";
-    const title = command.localStage === "semifinal" ? "Semi-Finals" : command.localStage === "finals" ? "Finals & 3rd Place" : `Round ${command.localRound}`;
-    context.fillText(title, width / 2, 74);
-    context.strokeStyle = "#6d6a66";
-    context.beginPath(); context.moveTo(0, headerHeight - 1); context.lineTo(width, headerHeight - 1); context.stroke();
-    rows.forEach((row, index) => {
-      const top = headerHeight + index * rowHeight;
-      context.fillStyle = index % 2 ? "#211f1d" : "#242321";
-      context.fillRect(10, top, width - 20, rowHeight);
-      context.fillStyle = "#e8e8e8";
-      context.textAlign = "center";
-      context.font = "700 20px Arial, sans-serif";
-      context.fillText(row.label || String(index + 1), 65, top + 55);
-      context.textAlign = "left";
-      context.fillStyle = "#b7b7b7";
-      context.font = "700 22px Arial, sans-serif";
-      context.fillText(fitText(context, row.black, 260), 130, top + 55);
-      context.textAlign = "center";
-      context.fillStyle = "#fff";
-      context.font = "900 28px Arial, sans-serif";
-      context.fillText(`${row.blackScore}  -  ${row.whiteScore}`, 520, top + 57);
-      context.textAlign = "left";
-      context.fillStyle = "#b7b7b7";
-      context.font = "700 22px Arial, sans-serif";
-      context.fillText(fitText(context, row.white, 260), 690, top + 55);
-    });
+    const renderer = window.FTD_SCORE_PNG_RENDERER;
+    if (!renderer || typeof renderer.buildScoreRow !== "function" || typeof renderer.buildPairingsCanvas !== "function") {
+      throw bridgeError("score-renderer-missing", "FTD 比分 PNG 共享生成器未加载");
+    }
+    const pngRows = rows.map((row) => renderer.buildScoreRow(row));
+    const label = command.localStage === "semifinal" ? "SF" : command.localStage === "finals" ? "finals" : `round-${command.actualFtdRound}`;
+    const canvas = renderer.buildPairingsCanvas(pngRows, label);
     const dataUrl = canvas.toDataURL("image/png");
     return { filename: command.filename, dataUrl, pngSha256: await sha256Hex(dataUrl), rowCount: rows.length, renderedAt: new Date().toISOString() };
   }
@@ -534,6 +543,7 @@
     if (command.action === "readRound" || command.action === "readbackRound") return readSanitizedRound(command);
     if (command.action === "writeScore") return handleWriteScore(command);
     if (command.action === "writeTranscript") return handleWriteTranscript(command);
+    if (command.action === "renderPairingsImage") return handleRenderPairingsImage(command);
     if (command.action === "renderVerifiedRoundImage") return handleRenderImage(command);
     throw bridgeError("unknown-action", "未知 bridge 动作");
   }

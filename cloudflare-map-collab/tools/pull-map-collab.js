@@ -2,9 +2,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const args = parseArgs(process.argv.slice(2));
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const require = createRequire(import.meta.url);
+const STATE_COMMANDS = require(path.join(repoRoot, "tournament_arrangement", "recovered", "state-commands.js"));
 const statePath = path.resolve(args.state || path.join(repoRoot, "tournament_arrangement", "recovered", "data", "checkin-state.json"));
 const urlArg = String(args.url || "");
 const tokenArg = String(args.token || "");
@@ -114,13 +117,15 @@ async function writeStateViaLocalApi(localApi, mapping) {
       savedAt: Date.now(),
     },
   };
-  const saveResponse = await fetch(localApi, {
+  const diff = STATE_COMMANDS.diffState(current.state, nextState);
+  const saveResponse = await fetch(`${localApi}/commands`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      baseRevision: current.revision,
-      state: nextState,
-      source: "map-collab-pull",
+      commandId: `map-collab-pull-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      type: "entities.mutate",
+      actor: "script",
+      payload: { mutations: diff.mutations },
     }),
   });
   const saved = await saveResponse.json().catch(() => null);
@@ -130,6 +135,10 @@ async function writeStateViaLocalApi(localApi, mapping) {
 }
 
 function writeStateFile(statePath, mapping) {
+  const productionState = path.resolve(repoRoot, "tournament_arrangement", "recovered", "data", "checkin-state.json");
+  if (path.resolve(statePath) === productionState) {
+    throw new Error("--direct-file is fixture/test-only and cannot write the live shared state; use the command API");
+  }
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   state.ftdPlayerAccountMapping = mapping;
   state.savedAt = Date.now();

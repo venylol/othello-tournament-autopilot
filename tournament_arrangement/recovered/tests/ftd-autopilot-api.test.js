@@ -2,11 +2,14 @@
 
 const assert = require("assert");
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
+const net = require("net");
 const { spawn } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
-const port = 4175;
-const localOrigin = `http://127.0.0.1:${port}`;
+let port = 0;
+let localOrigin = "";
 const extensionId = "kbojmgkjbgokbbhlpkapiobfjnpacnme";
 const extensionOrigin = `chrome-extension://${extensionId}`;
 
@@ -22,11 +25,23 @@ async function waitForHealth() {
 }
 
 async function run() {
+  port = await new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const selected = probe.address().port;
+      probe.close(() => resolve(selected));
+    });
+  });
+  localOrigin = `http://127.0.0.1:${port}`;
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ftd-autopilot-api-"));
+  const stateFile = path.join(temp, "checkin-state.json");
+  fs.writeFileSync(stateFile, JSON.stringify({ version: 2, step: "checkin", players: [], scoreHelper: { version: 2, rounds: [] } }, null, 2) + "\n", "utf8");
   const child = spawn(process.execPath, ["local-server.js"], {
     cwd: root,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, CHECKIN_PORT: String(port) },
+    env: { ...process.env, CHECKIN_PORT: String(port), CHECKIN_STATE_FILE: stateFile, CHECKIN_DATA_DIR: temp },
   });
   try {
     await waitForHealth();
@@ -56,7 +71,7 @@ async function run() {
     const register = await fetch(`${localOrigin}/api/automation/bridge/register`, {
       method: "POST",
       headers: { Origin: extensionOrigin, "Content-Type": "application/json", "X-FTD-Bridge-Extension": extensionId },
-      body: JSON.stringify({ bridgeId: "mock_bridge_123456", tabId: 7, pageUrl: "https://www.flipthedisc.com/live/593", extensionId }),
+      body: JSON.stringify({ bridgeId: "mock_bridge_123456", tabId: 7, pageUrl: "https://www.flipthedisc.com/live/593", extensionId, bridgeVersion: "0.3.4" }),
     });
     assert.strictEqual(register.status, 200);
     assert.strictEqual((await register.json()).ok, true);

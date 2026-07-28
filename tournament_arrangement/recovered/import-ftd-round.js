@@ -198,7 +198,6 @@ async function main() {
     throw new Error(`Local state API did not return a usable state: ${JSON.stringify(current)}`);
   }
   const state = current.state;
-  state.step = "score-helper";
   const existingHelper =
     state.scoreHelper && typeof state.scoreHelper === "object" ? state.scoreHelper : {};
   const isManualRoundCount = existingHelper.roundCountSource === "manual";
@@ -220,8 +219,7 @@ async function main() {
     helper.roundCountSource = "auto";
     helper.autoRoundCountPlayerCount = autoPlayerCount;
   }
-  helper.activeRound = ftd.round;
-  helper.rounds[ftd.round - 1].ftdPairings = ftd.ftdPairings;
+  const targetRound = helper.rounds[ftd.round - 1];
   helper.updatedAt = Date.now();
   state.savedAt = Date.now();
   state.ftdRound = {
@@ -253,9 +251,33 @@ async function main() {
     })),
   });
 
-  const written = await httpJson("POST", STATE_API, {
-    source: "agent-ftd-round-import",
-    state,
+  const written = await httpJson("POST", `${STATE_API.replace(/\/+$/, "")}/commands`, {
+    commandId: `agent-ftd-round-import-${ftd.round}-${Date.now()}`,
+    type: "round.import",
+    actor: "agent",
+    target: { kind: "round", id: targetRound.entityId },
+    expectedRevision: targetRound.entityRevision,
+    preconditions: [
+      { target: { kind: "scoreHelperMetadata", id: helper.entityId }, expectedRevision: helper.entityRevision },
+      { target: { kind: "domain", id: "domain:ftdRound" }, expectedRevision: Number(state.localSync?.domains?.ftdRound?.entityRevision || 0) },
+      ...(Array.isArray(targetRound.ftdPairings) ? targetRound.ftdPairings : []).map((row) => ({
+        target: { kind: "scoreRow", id: row.entityId },
+        expectedRevision: Number(row.entityRevision || 0),
+      })),
+    ],
+    payload: {
+      pairings: ftd.ftdPairings,
+      roundPatch: { round: ftd.round },
+      scoreHelperPatch: {
+        version: helper.version,
+        preliminaryRoundCount: helper.preliminaryRoundCount,
+        roundCount: helper.roundCount,
+        roundCountSource: helper.roundCountSource,
+        autoRoundCountPlayerCount: helper.autoRoundCountPlayerCount,
+        updatedAt: helper.updatedAt,
+      },
+      ftdRound: state.ftdRound,
+    },
   });
   if (!written || written.ok !== true) {
     throw new Error(`Failed to write state: ${JSON.stringify(written)}`);
@@ -268,7 +290,7 @@ async function main() {
         sourceFile: file,
         round: ftd.round,
         pairingCount: ftd.ftdPairings.length,
-        activeRound: written.state.scoreHelper.activeRound,
+        activeRound: ftd.round,
         currentFile: FTD_CURRENT_FILE,
         scoresImported: false,
       },
