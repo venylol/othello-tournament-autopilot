@@ -15,6 +15,8 @@
 - `agent_offbook_review.py`：生成逐 ply 人工审查包、校验 Agent 手工脱谱标记，
   并计算包含脱谱手在内的脱谱后统计。
 - `render_github_pdf.py`：把 Markdown 渲染成 GitHub Issue 风格 HTML/PDF。
+- `generate_review_checklist.py`：从既有调查 JSON 和固定模板生成审核信息速览表。
+- `review_checklist_template.md`：审核信息速览表的 Markdown 模板。
 - `METHOD.md`：当前分析方法及各项结果的含义。
 
 ## 环境
@@ -355,3 +357,66 @@ python render_github_pdf.py `
 
 将 manifest 路径传给 `--appendix-manifest`。脚本同时保存 HTML，默认与 PDF
 同名；可以用 `--html-output` 指定位置。
+
+## 11. 生成审核信息速览表
+
+该流程只读取已有 OQ bundle、EG 汇总/单局 JSON、人工脱谱模型和高分参照统计，
+不会抓取网络数据或重跑引擎。OQ 公开对局需要更新时，先复用
+`oq_account_bundle.py` 生成新的 account bundle，再把该文件写入配置。
+
+```powershell
+python generate_review_checklist.py --config "C:\path\checklist-config.json"
+```
+
+配置示例：
+
+```json
+{
+  "schema": "review-checklist-config-v1",
+  "playerDisplayName": "Player Name",
+  "account": "oq_account",
+  "reportedGameIds": ["reported_game_1", "reported_game_2"],
+  "accountBundle": "..\\source-investigation\\account-bundle.json",
+  "engineSummary": "..\\source-investigation\\ega-analysis\\summary.json",
+  "sameColorModel": "..\\report-investigation\\same-color-model.json",
+  "allControlModel": "..\\report-investigation\\all-control-model.json",
+  "comparisonStats": "..\\report-investigation\\highscore-reference.json",
+  "comparisonReference": "reference-name-when-the-file-has-more-than-one",
+  "profileImage": "C:\\path\\profile.jpg",
+  "openingImage": "C:\\path\\oq-opening-ranking.jpg",
+  "template": "..\\..\\review_checklist_template.md",
+  "outputMarkdown": "player-review-checklist.md",
+  "outputData": "player-review-checklist-data.json"
+}
+```
+
+相对路径一律相对于配置文件所在目录解析。`comparisonReference` 仅在
+`comparisonStats.references` 有多组时必填；`outputData` 可省略。脚本把资料截图
+和 OQ 开局排行截图复制到 Markdown 同目录的 `assets` 子目录，并使用相对路径
+嵌入。开局排行完全来自 OQ 截图；checklist 不读取 Human Frequency Book，
+也不计算“最常用开局”。原图不会被修改。
+
+`engineSummary` 所在目录必须保留对应的 `game_*.json`。脚本复用这些已有 EG
+单局结果和 `analysis_core.py` 的既有用时基线函数，生成举报局逐局用时以及举报局
+组合与同色个人非举报对照的汇总对比。相对基线平均残差使用同色非举报局拟合的
+固定四节点三次回归样条；长考阈值为相同 ply 对照用时的第 90 百分位。脚本不
+重跑 EG 引擎。
+
+Rating 表只使用目标选手具有有效 `averageLoss`、有效 `totalLoss` 且
+`nodeCount > 0` 的 EG 整局结果，并强制排除 `reportedGameIds`。对手 Rating 取
+对应 OQ detail 的赛前 `players[*].oldR`。分组边界固定为：
+
+- `<1200`
+- `[1200,1500)`
+- `[1500,1700)`
+- `[1700,2000)`
+- `[2000,2200)`
+- `>=2200`
+
+Rating 表按组输出样本局数、组内总子损、每盘整局总子损的平均数/中位数，
+以及每盘整局平均子损的平均数/中位数。其他子损表同时保留总子损、局等权平均
+和着手等权平均等口径。
+
+输入 schema、账号、举报局、对手 `oldR`、模型控制组排除关系或模板占位符有误
+时，脚本会明确报错。所有文本输出为 UTF-8 无 BOM；任一目标 Markdown、数据
+JSON 或目标图片已经存在时，脚本拒绝覆盖。

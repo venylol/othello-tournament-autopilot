@@ -29,7 +29,7 @@ def write_text(path: str | Path, value: str) -> None:
     target.write_text(value, encoding="utf-8", newline="")
 
 
-def inline_html(text: str) -> str:
+def inline_html(text: str, image_base_dir: Path | None = None) -> str:
     tokens: list[str] = []
 
     def store(value: str) -> str:
@@ -40,7 +40,24 @@ def inline_html(text: str) -> str:
     def code_replace(match: re.Match[str]) -> str:
         return store(f"<code>{html.escape(match.group(1))}</code>")
 
+    text = re.sub(r"<br\s*/?>", lambda _: store("<br>"), text, flags=re.IGNORECASE)
     text = re.sub(r"`([^`]+)`", code_replace, text)
+
+    def image_replace(match: re.Match[str]) -> str:
+        alt = html.escape(match.group(1), quote=True)
+        raw_source = match.group(2).strip()
+        if re.match(r"^(?:https?://|data:)", raw_source, flags=re.IGNORECASE):
+            source = html.escape(raw_source, quote=True)
+        else:
+            image_path = Path(raw_source)
+            if not image_path.is_absolute():
+                if image_base_dir is None:
+                    raise ValueError(f"relative Markdown image has no base directory: {raw_source}")
+                image_path = image_base_dir / image_path
+            source = image_data_uri(image_path.resolve())
+        return store(f'<img src="{source}" alt="{alt}">')
+
+    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", image_replace, text)
 
     def link_replace(match: re.Match[str]) -> str:
         label = html.escape(match.group(1))
@@ -50,6 +67,7 @@ def inline_html(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link_replace, text)
     escaped = html.escape(text)
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", escaped)
     escaped = re.sub(r"(?<![\"'=])(https?://[^\s<]+)", r'<a href="\1">\1</a>', escaped)
     for index, token in enumerate(tokens):
         escaped = escaped.replace(f"@@TOKEN{index}@@", token)
@@ -79,7 +97,7 @@ def starts_block(lines: list[str], index: int) -> bool:
     )
 
 
-def markdown_to_html(markdown: str) -> str:
+def markdown_to_html(markdown: str, image_base_dir: Path | None = None) -> str:
     lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     output: list[str] = []
     index = 0
@@ -103,7 +121,7 @@ def markdown_to_html(markdown: str) -> str:
         heading = HEADING_RE.match(line)
         if heading:
             level = len(heading.group(1))
-            output.append(f"<h{level}>{inline_html(heading.group(2))}</h{level}>")
+            output.append(f"<h{level}>{inline_html(heading.group(2), image_base_dir)}</h{level}>")
             index += 1
             continue
         if index + 1 < len(lines) and "|" in line and TABLE_SEPARATOR_RE.match(lines[index + 1]):
@@ -114,11 +132,11 @@ def markdown_to_html(markdown: str) -> str:
                 rows.append(table_cells(lines[index]))
                 index += 1
             output.append('<div class="table-wrap"><table><thead><tr>')
-            output.extend(f"<th>{inline_html(cell)}</th>" for cell in headers)
+            output.extend(f"<th>{inline_html(cell, image_base_dir)}</th>" for cell in headers)
             output.append("</tr></thead><tbody>")
             for row in rows:
                 padded = row + [""] * (len(headers) - len(row))
-                output.append("<tr>" + "".join(f"<td>{inline_html(cell)}</td>" for cell in padded[:len(headers)]) + "</tr>")
+                output.append("<tr>" + "".join(f"<td>{inline_html(cell, image_base_dir)}</td>" for cell in padded[:len(headers)]) + "</tr>")
             output.append("</tbody></table></div>")
             continue
         unordered = UL_RE.match(line)
@@ -130,7 +148,7 @@ def markdown_to_html(markdown: str) -> str:
                     break
                 items.append(match.group(1))
                 index += 1
-            output.append("<ul>" + "".join(f"<li>{inline_html(item)}</li>" for item in items) + "</ul>")
+            output.append("<ul>" + "".join(f"<li>{inline_html(item, image_base_dir)}</li>" for item in items) + "</ul>")
             continue
         ordered = OL_RE.match(line)
         if ordered:
@@ -141,14 +159,14 @@ def markdown_to_html(markdown: str) -> str:
                     break
                 items.append(match.group(1))
                 index += 1
-            output.append("<ol>" + "".join(f"<li>{inline_html(item)}</li>" for item in items) + "</ol>")
+            output.append("<ol>" + "".join(f"<li>{inline_html(item, image_base_dir)}</li>" for item in items) + "</ol>")
             continue
         if line.lstrip().startswith(">"):
             quote: list[str] = []
             while index < len(lines) and lines[index].lstrip().startswith(">"):
                 quote.append(lines[index].lstrip()[1:].strip())
                 index += 1
-            output.append(f"<blockquote><p>{inline_html(' '.join(quote))}</p></blockquote>")
+            output.append(f"<blockquote><p>{inline_html(' '.join(quote), image_base_dir)}</p></blockquote>")
             continue
         if line.strip() in {"---", "***"}:
             output.append("<hr>")
@@ -159,7 +177,7 @@ def markdown_to_html(markdown: str) -> str:
         while index < len(lines) and not starts_block(lines, index):
             paragraph.append(lines[index].strip())
             index += 1
-        output.append(f"<p>{inline_html(' '.join(paragraph))}</p>")
+        output.append(f"<p>{inline_html(' '.join(paragraph), image_base_dir)}</p>")
     return "\n".join(output)
 
 
@@ -208,6 +226,7 @@ def appendix_html(manifest_path: str | None) -> str:
 
 
 CSS = r"""
+.markdown-body img{display:block;max-width:100%;max-height:210mm;width:auto;height:auto;margin:8px auto 16px;border:1px solid #d0d7de;border-radius:6px}
 :root{color-scheme:light}*{box-sizing:border-box}html{background:#f6f8fa}body{margin:0;color:#1f2328;background:#f6f8fa;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI","Noto Sans SC",Arial,sans-serif;font-size:16px;line-height:1.55}.page-shell{max-width:1012px;margin:28px auto;background:#fff;border:1px solid #d0d7de;border-radius:6px;box-shadow:0 1px 3px rgba(31,35,40,.08)}.markdown-body{padding:45px 52px 64px;word-wrap:break-word}.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4{font-weight:600;line-height:1.25}.markdown-body h1{font-size:2em;margin:0 0 16px;padding-bottom:.3em;border-bottom:1px solid #d8dee4}.markdown-body h2{font-size:1.5em;margin:34px 0 16px;padding-bottom:.3em;border-bottom:1px solid #d8dee4}.markdown-body h3{font-size:1.25em;margin:26px 0 12px}.markdown-body h4{font-size:1em;margin:22px 0 8px}.markdown-body p{margin:0 0 16px}.markdown-body ul,.markdown-body ol{margin:0 0 16px;padding-left:2em}.markdown-body li+li{margin-top:.25em}.markdown-body code{padding:.2em .4em;margin:0;font-size:85%;white-space:break-spaces;background:rgba(175,184,193,.2);border-radius:6px;font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.markdown-body pre{padding:16px;overflow:auto;background:#f6f8fa;border-radius:6px}.markdown-body pre code{padding:0;background:transparent}.markdown-body blockquote{margin:0 0 16px;padding:0 1em;color:#57606a;border-left:.25em solid #d0d7de}.table-wrap{width:100%;overflow-x:auto;margin:0 0 18px}.markdown-body table{border-spacing:0;border-collapse:collapse;width:max-content;min-width:100%;font-size:14px}.markdown-body th,.markdown-body td{padding:7px 10px;border:1px solid #d0d7de;text-align:left;vertical-align:top}.markdown-body th{font-weight:600;background:#f6f8fa}.markdown-body tr:nth-child(2n){background:#f6f8fa}.cover{min-height:920px;padding:150px 72px 80px;text-align:center;background:linear-gradient(180deg,#f6f8fa 0,#fff 42%);border-bottom:1px solid #d0d7de}.cover h1{margin:0;font-size:38px;line-height:1.25;font-weight:650}.cover .subtitle{margin:18px 0 54px;color:#57606a;font-size:18px}.cover dl{display:grid;grid-template-columns:120px 280px;max-width:400px;margin:0 auto;text-align:left;border:1px solid #d0d7de;border-radius:6px;overflow:hidden}.cover dt,.cover dd{margin:0;padding:12px 16px;border-bottom:1px solid #d8dee4}.cover dt{font-weight:600;background:#f6f8fa}.cover dd{background:#fff}.cover dt:last-of-type,.cover dd:last-of-type{border-bottom:0}.appendix{padding-top:8px}.appendix-page{text-align:center;margin:0;padding:18px 0 0}.appendix-page figcaption{font-weight:600;margin-bottom:14px}.appendix-page img{display:block;max-width:420px;max-height:870px;width:auto;height:auto;margin:0 auto;border:1px solid #d0d7de;border-radius:6px}
 @page{size:A4;margin:14mm 14mm 16mm}@media print{html,body{background:#fff}.page-shell{max-width:none;margin:0;border:0;border-radius:0;box-shadow:none}.cover{min-height:260mm;padding:56mm 18mm 20mm;break-after:page}.markdown-body{padding:0;font-size:10.4pt;line-height:1.52}.markdown-body h1{font-size:20pt}.markdown-body h2{font-size:17pt;break-after:avoid-page}.markdown-body h3{font-size:13pt;break-after:avoid-page}.markdown-body h4{font-size:11pt;break-after:avoid-page}.markdown-body table{font-size:8.2pt;width:100%;table-layout:auto}.markdown-body th,.markdown-body td{padding:4px 6px}tr{break-inside:avoid-page}.appendix{break-before:page}.appendix-page{break-before:page;height:255mm;display:flex;flex-direction:column;justify-content:flex-start}.appendix-page:first-of-type{break-before:auto;height:auto;break-inside:avoid-page}.appendix-page:first-of-type img{max-height:180mm}.appendix-page img{max-height:225mm;max-width:118mm}.table-wrap{overflow:visible}a{color:inherit;text-decoration:none}}
 """
@@ -242,10 +261,14 @@ def render_pdf(edge: Path, html_path: Path, pdf_path: Path) -> None:
 
 
 def build_document(args: argparse.Namespace) -> tuple[str, str]:
-    source = read_text(args.markdown)
+    markdown_path = Path(args.markdown).resolve()
+    source = read_text(markdown_path)
     markdown_title, body_markdown = split_title_and_body(source)
     title = args.title or markdown_title
-    article = markdown_to_html(body_markdown if not args.no_cover else source)
+    article = markdown_to_html(
+        body_markdown if not args.no_cover else source,
+        markdown_path.parent,
+    )
     cover = ""
     if not args.no_cover:
         rows = []
