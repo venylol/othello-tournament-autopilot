@@ -72,6 +72,102 @@ test("clearing children of an existing round emits only removable child commands
   assert.equal(result.state.scoreHelper.rounds.length, 2);
 });
 
+test("clearing all FTD Player rows uses one atomic collection command", () => {
+  const base = fixture();
+  base.ftdPlayerRegistration = {
+    type: "ftd-player-registration",
+    schemaVersion: 1,
+    updatedAt: "2026-07-27T10:00:00.000Z",
+    resolverBatchId: "old-batch",
+    resolvedAt: "",
+    sourceRevision: 12,
+    rows: Array.from({ length: 200 }, (_, index) => ({
+      rowId: `row-${index}`,
+      rosterName: `Player ${index}`,
+      status: "resolved",
+    })),
+    pendingBatch: { batchId: "old-batch", status: "pending", rows: [] },
+    consumedBatchIds: [],
+  };
+  const migrated = SERVER.migrateState(base);
+  const working = CLIENT.clone(migrated);
+  working.ftdPlayerRegistration = {
+    type: "ftd-player-registration",
+    schemaVersion: 1,
+    updatedAt: "",
+    resolverBatchId: "",
+    resolvedAt: "",
+    sourceRevision: null,
+    rows: [],
+    pendingBatch: null,
+    consumedBatchIds: [],
+    entityId: migrated.ftdPlayerRegistration.entityId,
+    entityRevision: migrated.ftdPlayerRegistration.entityRevision,
+  };
+  const mutations = CLIENT.buildMutations(migrated, working);
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].op, "clearChildren");
+  assert.equal(mutations[0].collection, "rows");
+  const result = SERVER.applyCommand(migrated, {
+    commandId: "frontend-clear-ftd-players",
+    type: "entities.mutate",
+    actor: "user",
+    payload: { mutations },
+  });
+  assert.equal(result.state.ftdPlayerRegistration.rows.length, 0);
+  assert.deepEqual(result.changedEntities[0].clearedCollections, ["rows"]);
+  const browserState = CLIENT.clone(migrated);
+  CLIENT.applyChangedEntities(browserState, result.changedEntities);
+  assert.equal(browserState.ftdPlayerRegistration.rows.length, 0);
+  assert.equal(browserState.players.length, 2);
+  assert.equal(browserState.scoreHelper.rounds[0].ftdPairings.length, 1);
+});
+
+test("a compatible FTD Player metadata race is rebased for one retry", () => {
+  const base = fixture();
+  base.ftdPlayerRegistration = {
+    type: "ftd-player-registration",
+    schemaVersion: 1,
+    updatedAt: "2026-08-01T10:00:00.000Z",
+    resolverBatchId: "resolver-current",
+    resolvedAt: "2026-08-01T10:00:00.000Z",
+    sourceRevision: 10,
+    rows: [],
+    pendingBatch: null,
+    consumedBatchIds: [],
+  };
+  const migrated = SERVER.migrateState(base);
+  const browserBase = CLIENT.clone(migrated);
+  const working = CLIENT.clone(migrated);
+  working.ftdPlayerRegistration.sourceRevision = 11;
+  working.ftdPlayerRegistration.pendingBatch = { batchId: "console-local", status: "pending", rows: [] };
+  const remote = SERVER.applyCommand(migrated, {
+    commandId: "remote-registration-metadata",
+    type: "entities.mutate",
+    actor: "agent",
+    payload: { mutations: [{
+      op: "patch",
+      target: { kind: "registrationMetadata", id: migrated.ftdPlayerRegistration.entityId },
+      expectedRevision: migrated.ftdPlayerRegistration.entityRevision,
+      set: { sourceRevision: 11 },
+    }] },
+  });
+  const retryMutations = CLIENT.rebaseRegistrationMetadataConflict(
+    browserBase,
+    working,
+    remote.changedEntities[0],
+  );
+  assert.ok(Array.isArray(retryMutations));
+  const saved = SERVER.applyCommand(remote.state, {
+    commandId: "retry-registration-metadata",
+    type: "entities.mutate",
+    actor: "user",
+    payload: { mutations: retryMutations },
+  });
+  assert.equal(saved.state.ftdPlayerRegistration.pendingBatch.batchId, "console-local");
+  assert.equal(saved.state.ftdPlayerRegistration.sourceRevision, 11);
+});
+
 test("an SSE change to another row preserves the focused row object and draft", () => {
   const state = fixture();
   const focused = state.players[0];

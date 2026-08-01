@@ -7,7 +7,7 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="color-scheme" content="light dark" />
-    <meta name="app-version" content="ftd-player-registration.3" />
+    <meta name="app-version" content="stage-layout.4" />
     <!-- Match Material You surface tones (closer to Pixel OS) -->
     <meta
       name="theme-color"
@@ -26,10 +26,10 @@
     <meta name="application-name" content="比赛签到助手" />
     <title>比赛签到助手（本地保存版）</title>
 
-    <link rel="manifest" href="./manifest.webmanifest?v=ftd-player-registration.3" />
+    <link rel="manifest" href="./manifest.webmanifest?v=stage-layout.4" />
     <link rel="icon" href="./icons/favicon-32.png" sizes="32x32" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=ftd-player-registration.3" />
+    <link rel="stylesheet" href="./styles.css?v=stage-layout.4" />
 
     <style>
       @media (prefers-color-scheme: dark) {
@@ -49,12 +49,12 @@
     </style>
 
     <!-- 仅用于导出 PNG；即使加载失败，其他功能仍可用 -->
-    <script defer src="./vendor/html2canvas.min.js?v=ftd-player-registration.3"></script>
-    <script defer src="./ftd-transcript-shared.js?v=ftd-player-registration.3"></script>
-    <script defer src="./ftd-round-shared.js?v=ftd-player-registration.3"></script>
-    <script defer src="./ftd-player-registration-shared.js?v=ftd-player-registration.3"></script>
-    <script defer src="./frontend-state-sync.js?v=entity-commands.2"></script>
-    <script defer src="./app.js?v=entity-commands.2"></script>
+    <script defer src="./vendor/html2canvas.min.js?v=stage-layout.4"></script>
+    <script defer src="./ftd-transcript-shared.js?v=stage-layout.4"></script>
+    <script defer src="./ftd-round-shared.js?v=stage-layout.4"></script>
+    <script defer src="./ftd-player-registration-shared.js?v=stage-layout.4"></script>
+    <script defer src="./frontend-state-sync.js?v=stage-layout.4"></script>
+    <script defer src="./app.js?v=tournament-reset.1"></script>
   </head>
 
   <body>
@@ -344,7 +344,7 @@ Wu Jianxiang"
                 placeholder="请在此粘贴完整的接龙信息…"
               ></textarea>
               <div class="field__hint">
-                会自动过滤“接龙说明/规则/链接”等非选手行，支持 #接龙 / #接龍。
+                会自动过滤“接龙说明/规则/链接”等非选手行，支持 #接龙 / #接龍。确认导入后会清空上一场比赛的旧状态。
               </div>
             </div>
           </div>

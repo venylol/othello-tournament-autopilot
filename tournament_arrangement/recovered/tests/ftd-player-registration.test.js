@@ -140,6 +140,17 @@ async function run() {
   };
   const commandState = COMMANDS.migrateState({ ...currentState, competitionName: "current name" });
   const registrationEntity = commandState.ftdPlayerRegistration;
+  const identityPrepared = registration.prepareConsoleBatch(registrationEntity, commandState.players, {
+    batchId: "identity-preserved",
+    createdAt: "2026-07-27T00:11:00.000Z",
+    sourceRevision: 22,
+  });
+  assert.strictEqual(identityPrepared.registration.entityId, registrationEntity.entityId);
+  assert.strictEqual(identityPrepared.registration.entityRevision, registrationEntity.entityRevision);
+  assert.deepStrictEqual(
+    identityPrepared.registration.rows.map((item) => [item.entityId, item.entityRevision]),
+    registrationEntity.rows.map((item) => [item.entityId, item.entityRevision]),
+  );
   const agentResult = COMMANDS.applyCommand(commandState, {
     commandId: "agent-registration-result",
     type: "entities.mutate",

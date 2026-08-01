@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import math
 import os
@@ -76,6 +77,14 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
 
 
 class OthelloBoard:
@@ -179,6 +188,11 @@ class PersistentEngine:
     ) -> None:
         if not engine_exe.exists():
             raise FileNotFoundError(f"Egaroucid console not found: {engine_exe}")
+        self.engine_exe = engine_exe.resolve()
+        self.level = int(level)
+        self.threads = int(threads)
+        self.hash_level = int(hash_level)
+        self.book_file = book_file.resolve() if book_file and book_file.exists() else None
         args = [
             str(engine_exe),
             "-q",
@@ -213,6 +227,17 @@ class PersistentEngine:
         self._reader = threading.Thread(target=self._read_output, daemon=True)
         self._reader.start()
         self._wait_for_prompt()
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "name": "Egaroucid for Console",
+            "path": str(self.engine_exe),
+            "sha256": file_sha256(self.engine_exe),
+            "level": self.level,
+            "threads": self.threads,
+            "hash": self.hash_level,
+            "book": str(self.book_file) if self.book_file else "enabled-default",
+        }
 
     def _read_output(self) -> None:
         assert self.proc.stdout is not None
@@ -598,8 +623,63 @@ def oq_moves(detail: dict[str, Any]) -> list[str]:
     return out
 
 
+def oq_timed_events(task: GameTask) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    engine_ply = 0
+    for source_move_index, item in enumerate(match_helper.oq_detail_moves(task.detail)):
+        if not isinstance(item, dict):
+            continue
+        source_color = "black" if source_move_index % 2 == 0 else "white"
+        move = norm(item.get("m")).lower()
+        if MOVE_RE.match(move):
+            event_type = "move"
+            engine_ply += 1
+            event_engine_ply: int | None = engine_ply
+        elif move == "-":
+            event_type = "pass"
+            event_engine_ply = None
+        else:
+            event_type = "terminal_event"
+            event_engine_ply = None
+        player_name = task.black_name if source_color == "black" else task.white_name
+        player_account = task.black_account if source_color == "black" else task.white_account
+        thinking_time = item.get("t")
+        try:
+            thinking_time_ms = int(thinking_time) if thinking_time is not None else None
+        except (TypeError, ValueError):
+            thinking_time_ms = None
+        event = {
+            "sourceMoveIndex": source_move_index,
+            "turnNumber": source_move_index + 1,
+            "enginePly": event_engine_ply,
+            "eventType": event_type,
+            "move": move or None,
+            "playerColor": source_color,
+            "playerName": player_name,
+            "playerAccount": player_account,
+            "thinkingTimeMs": thinking_time_ms,
+            "status": item.get("s"),
+            "delay": item.get("delay"),
+            "bestMove": None,
+            "bestEval": None,
+            "actualEval": None,
+            "lossPositive": None,
+            "lossClipped": None,
+            "lossSignedUser": None,
+            "engineJudge": None,
+            "boardBefore": None,
+            "legalMoveCount": None,
+            "bestDepth": None,
+            "nextDepth": None,
+        }
+        events.append(event)
+    return events
+
+
 def analyze_game(task: GameTask, engine: PersistentEngine) -> dict[str, Any]:
-    moves = oq_moves(task.detail)
+    events = oq_timed_events(task)
+    move_events = [event for event in events if event["eventType"] == "move"]
+    moves = [str(event["move"]) for event in move_events]
     board = OthelloBoard()
     engine.setboard(board.to_setboard_str())
     nodes: list[dict[str, Any]] = []
@@ -608,9 +688,17 @@ def analyze_game(task: GameTask, engine: PersistentEngine) -> dict[str, Any]:
         "white": {"name": task.white_name, "account": task.white_account, "color": "white", "nodes": []},
     }
 
-    for ply, move in enumerate(moves, start=1):
+    for ply, event in enumerate(move_events, start=1):
+        move = str(event["move"])
         side_before = board.current
+        board_before = board.to_setboard_str()
+        legal_move_count = len(board.legal_moves())
         player_color = "black" if side_before == "X" else "white"
+        if event["playerColor"] != player_color:
+            raise RuntimeError(
+                f"OQ/source turn mismatch in {task.game_id} at sourceMoveIndex "
+                f"{event['sourceMoveIndex']}: source={event['playerColor']} engine={player_color}"
+            )
         player_name = task.black_name if player_color == "black" else task.white_name
         player_account = task.black_account if player_color == "black" else task.white_account
         current_hint = engine.hint()
@@ -630,6 +718,8 @@ def analyze_game(task: GameTask, engine: PersistentEngine) -> dict[str, Any]:
             next_depth = next_hint.get("depth", "")
         best_eval = int(current_hint["bestEval"])
         loss_positive = best_eval - actual_eval
+        loss_clipped = max(0, loss_positive)
+        engine_judge = "Mistake" if loss_clipped >= 4 else "Disagree" if loss_clipped > 0 else ""
         node = {
             "ply": ply,
             "plyGroup": math.ceil(ply / 2),
@@ -637,17 +727,28 @@ def analyze_game(task: GameTask, engine: PersistentEngine) -> dict[str, Any]:
             "playerColor": player_color,
             "playerName": player_name,
             "playerAccount": player_account,
+            "sourceMoveIndex": event["sourceMoveIndex"],
+            "thinkingTimeMs": event["thinkingTimeMs"],
+            "boardBefore": board_before,
+            "legalMoveCount": legal_move_count,
             "bestMove": current_hint["bestMove"],
             "bestEval": best_eval,
             "actualEval": actual_eval,
             "lossPositive": loss_positive,
-            "lossClipped": max(0, loss_positive),
+            "lossClipped": loss_clipped,
             "lossSignedUser": actual_eval - best_eval,
+            "engineJudge": engine_judge,
             "bestDepth": current_hint.get("depth", ""),
             "nextDepth": next_depth,
         }
         nodes.append(node)
         by_side[player_color]["nodes"].append(node)
+        for key in (
+            "bestMove", "bestEval", "actualEval", "lossPositive", "lossClipped",
+            "lossSignedUser", "engineJudge", "boardBefore", "legalMoveCount",
+            "bestDepth", "nextDepth",
+        ):
+            event[key] = node[key]
 
     players = []
     for value in by_side.values():
@@ -680,7 +781,12 @@ def analyze_game(task: GameTask, engine: PersistentEngine) -> dict[str, Any]:
         "ftdBlack": {"name": task.ftd_black_name, "account": task.ftd_black_account},
         "ftdWhite": {"name": task.ftd_white_name, "account": task.ftd_white_account},
         "actualSideByFtdSide": {"black": task.black_ftd_side, "white": task.white_ftd_side},
+        "engine": engine.metadata(),
+        "sourceEventCount": len(events),
         "moveCount": len(moves),
+        "passCount": sum(event["eventType"] == "pass" for event in events),
+        "terminalEventCount": sum(event["eventType"] == "terminal_event" for event in events),
+        "events": events,
         "nodes": nodes,
         "players": players,
     }
@@ -704,8 +810,25 @@ def game_side_player_summaries(analysis: dict[str, Any]) -> list[dict[str, Any]]
             for node in analysis.get("nodes", [])
             if isinstance(node, dict) and norm(node.get("playerColor")).lower() == color
         ]
+        events = [
+            event
+            for event in analysis.get("events", [])
+            if isinstance(event, dict) and norm(event.get("playerColor")).lower() == color
+        ]
+        if not events:
+            events = nodes
         total = sum(float(node.get("lossClipped") or 0) for node in nodes)
         count = len(nodes)
+        move_times = [
+            int(node["thinkingTimeMs"])
+            for node in nodes
+            if isinstance(node.get("thinkingTimeMs"), (int, float))
+        ]
+        event_times = [
+            int(event["thinkingTimeMs"])
+            for event in events
+            if isinstance(event.get("thinkingTimeMs"), (int, float))
+        ]
         out.append(
             {
                 "key": key,
@@ -716,6 +839,14 @@ def game_side_player_summaries(analysis: dict[str, Any]) -> list[dict[str, Any]]
                 "totalLoss": round(total, 3),
                 "averageLoss": round(total / count, 3) if count else None,
                 "nodeCount": count,
+                "moveThinkingTimeCount": len(move_times),
+                "moveThinkingTimeTotalMs": sum(move_times),
+                "moveThinkingTimeAverageMs": round(sum(move_times) / len(move_times), 3) if move_times else None,
+                "eventCount": len(events),
+                "eventThinkingTimeCount": len(event_times),
+                "eventThinkingTimeTotalMs": sum(event_times),
+                "passCount": sum(norm(event.get("eventType")) == "pass" for event in events),
+                "terminalEventCount": sum(norm(event.get("eventType")) == "terminal_event" for event in events),
             }
         )
     return out
@@ -752,6 +883,13 @@ def summarize_competition(cache_dir: Path, analyses: list[dict[str, Any]]) -> di
                     "games": [],
                     "nodeCount": 0,
                     "totalLoss": 0.0,
+                    "moveThinkingTimeCount": 0,
+                    "moveThinkingTimeTotalMs": 0,
+                    "eventCount": 0,
+                    "eventThinkingTimeCount": 0,
+                    "eventThinkingTimeTotalMs": 0,
+                    "passCount": 0,
+                    "terminalEventCount": 0,
                     "plyGroups": {str(i): {"sum": 0.0, "count": 0} for i in range(1, 31)},
                 },
             )
@@ -764,6 +902,12 @@ def summarize_competition(cache_dir: Path, analyses: list[dict[str, Any]]) -> di
             count = len(nodes)
             bucket["nodeCount"] += count
             bucket["totalLoss"] += total
+            for field in (
+                "moveThinkingTimeCount", "moveThinkingTimeTotalMs", "eventCount",
+                "eventThinkingTimeCount", "eventThinkingTimeTotalMs", "passCount",
+                "terminalEventCount",
+            ):
+                bucket[field] += int(player.get(field) or 0)
             bucket["games"].append(
                 {
                     "round": analysis.get("round"),
@@ -772,6 +916,14 @@ def summarize_competition(cache_dir: Path, analyses: list[dict[str, Any]]) -> di
                     "totalLoss": round(total, 3),
                     "averageLoss": round(total / count, 3) if count else None,
                     "nodeCount": count,
+                    "moveThinkingTimeCount": int(player.get("moveThinkingTimeCount") or 0),
+                    "moveThinkingTimeTotalMs": int(player.get("moveThinkingTimeTotalMs") or 0),
+                    "moveThinkingTimeAverageMs": player.get("moveThinkingTimeAverageMs"),
+                    "eventCount": int(player.get("eventCount") or 0),
+                    "eventThinkingTimeCount": int(player.get("eventThinkingTimeCount") or 0),
+                    "eventThinkingTimeTotalMs": int(player.get("eventThinkingTimeTotalMs") or 0),
+                    "passCount": int(player.get("passCount") or 0),
+                    "terminalEventCount": int(player.get("terminalEventCount") or 0),
                     "offlineFilled": False,
                 }
             )
@@ -791,6 +943,14 @@ def summarize_competition(cache_dir: Path, analyses: list[dict[str, Any]]) -> di
                     "totalLoss": round(total, 3),
                     "averageLoss": round(total / count, 3) if count else None,
                     "nodeCount": count,
+                    "moveThinkingTimeCount": int(player.get("moveThinkingTimeCount") or 0),
+                    "moveThinkingTimeTotalMs": int(player.get("moveThinkingTimeTotalMs") or 0),
+                    "moveThinkingTimeAverageMs": player.get("moveThinkingTimeAverageMs"),
+                    "eventCount": int(player.get("eventCount") or 0),
+                    "eventThinkingTimeCount": int(player.get("eventThinkingTimeCount") or 0),
+                    "eventThinkingTimeTotalMs": int(player.get("eventThinkingTimeTotalMs") or 0),
+                    "passCount": int(player.get("passCount") or 0),
+                    "terminalEventCount": int(player.get("terminalEventCount") or 0),
                 }
             )
         games.append(game_summary)
@@ -819,6 +979,16 @@ def summarize_competition(cache_dir: Path, analyses: list[dict[str, Any]]) -> di
                 "totalLoss": round(float(bucket["totalLoss"]), 3),
                 "averageLoss": round(float(bucket["totalLoss"]) / node_count, 3) if node_count else None,
                 "averageGameLoss": round(avg_game_loss, 3) if avg_game_loss is not None else None,
+                "moveThinkingTimeCount": int(bucket["moveThinkingTimeCount"]),
+                "moveThinkingTimeTotalMs": int(bucket["moveThinkingTimeTotalMs"]),
+                "moveThinkingTimeAverageMs": round(
+                    float(bucket["moveThinkingTimeTotalMs"]) / int(bucket["moveThinkingTimeCount"]), 3
+                ) if int(bucket["moveThinkingTimeCount"]) else None,
+                "eventCount": int(bucket["eventCount"]),
+                "eventThinkingTimeCount": int(bucket["eventThinkingTimeCount"]),
+                "eventThinkingTimeTotalMs": int(bucket["eventThinkingTimeTotalMs"]),
+                "passCount": int(bucket["passCount"]),
+                "terminalEventCount": int(bucket["terminalEventCount"]),
                 "games": bucket["games"],
                 "plyGroups": ply_groups,
             }
@@ -1131,6 +1301,227 @@ def run_analyze_transcript(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def engine_version_text(engine_exe: Path) -> str:
+    result = subprocess.run(
+        [str(engine_exe), "-v"],
+        cwd=str(engine_exe.parent),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=True,
+    )
+    return "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+
+
+def bundle_task(
+    detail: dict[str, Any],
+    ordinal: int,
+    index_by_id: dict[str, dict[str, Any]],
+    tournament_by_id: dict[str, dict[str, Any]],
+) -> GameTask:
+    game_id = norm(detail.get("id"))
+    players = detail.get("players") if isinstance(detail.get("players"), list) else []
+    if len(players) != 2:
+        raise RuntimeError(f"bundle game {game_id!r} does not have exactly two OQ players")
+    black_name = norm(players[0].get("name") or players[0].get("id"))
+    white_name = norm(players[1].get("name") or players[1].get("id"))
+    black_account = norm(players[0].get("id") or players[0].get("name"))
+    white_account = norm(players[1].get("id") or players[1].get("name"))
+    tournament = tournament_by_id.get(game_id)
+    if tournament:
+        ftd_black_name = norm(tournament.get("ftdBlack"))
+        ftd_white_name = norm(tournament.get("ftdWhite"))
+        ftd_black_account = norm(tournament.get("ftdBlackAccount"))
+        ftd_white_account = norm(tournament.get("ftdWhiteAccount"))
+        black_key = account_key(black_account)
+        white_key = account_key(white_account)
+        black_ftd_side = "black" if black_key == account_key(ftd_black_account) else "white"
+        white_ftd_side = "black" if white_key == account_key(ftd_black_account) else "white"
+        expected_keys = {account_key(ftd_black_account), account_key(ftd_white_account)}
+        if {black_key, white_key} != expected_keys:
+            raise RuntimeError(f"bundle/tournament account mismatch for game {game_id}")
+        round_no = int(tournament.get("round") or 0)
+        table = int(tournament.get("table") or 0)
+    else:
+        ftd_black_name = black_name
+        ftd_white_name = white_name
+        ftd_black_account = black_account
+        ftd_white_account = white_account
+        black_ftd_side = "black"
+        white_ftd_side = "white"
+        round_no = 0
+        table = ordinal
+    final_status = norm(index_by_id.get(game_id, {}).get("finalStatus"))
+    return GameTask(
+        round_no=round_no,
+        table=table,
+        pairing_index=ordinal - 1,
+        black_name=black_name,
+        white_name=white_name,
+        black_account=black_account,
+        white_account=white_account,
+        black_ftd_side=black_ftd_side,
+        white_ftd_side=white_ftd_side,
+        ftd_black_name=ftd_black_name,
+        ftd_white_name=ftd_white_name,
+        ftd_black_account=ftd_black_account,
+        ftd_white_account=ftd_white_account,
+        game_id=game_id,
+        detail=detail,
+        source="oq-account-bundle",
+        ending_kind=final_status,
+    )
+
+
+def bundle_cached_analysis_complete(
+    task: GameTask,
+    analysis: Any,
+    engine_metadata: dict[str, Any],
+) -> bool:
+    if not cached_analysis_complete(task, analysis):
+        return False
+    stored_engine = analysis.get("engine") if isinstance(analysis.get("engine"), dict) else {}
+    for field in ("path", "sha256", "level", "threads", "hash", "book"):
+        if stored_engine.get(field) != engine_metadata.get(field):
+            return False
+    source_items = list(match_helper.oq_detail_moves(task.detail))
+    events = analysis.get("events") if isinstance(analysis.get("events"), list) else []
+    if len(events) != len(source_items):
+        return False
+    for index, (source, event) in enumerate(zip(source_items, events)):
+        if int(event.get("sourceMoveIndex", -1)) != index:
+            return False
+        source_time = source.get("t") if isinstance(source, dict) else None
+        if event.get("thinkingTimeMs") != source_time:
+            return False
+        if event.get("eventType") == "move":
+            if not isinstance(event.get("boardBefore"), str) or len(event["boardBefore"]) != 65:
+                return False
+            if not isinstance(event.get("legalMoveCount"), int):
+                return False
+    return True
+
+
+def run_analyze_bundle(args: argparse.Namespace) -> dict[str, Any]:
+    bundle_path = Path(args.bundle).resolve()
+    tournament_path = Path(args.tournament_bundle).resolve() if args.tournament_bundle else None
+    cache_dir = Path(args.cache_dir).resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    bundle = read_json(bundle_path)
+    details = bundle.get("details") if isinstance(bundle.get("details"), list) else []
+    index = bundle.get("index") if isinstance(bundle.get("index"), list) else []
+    if not details or len(details) != len(index):
+        raise RuntimeError("bundle index/details are missing or have different counts")
+    index_by_id = {norm(item.get("id")): item for item in index if isinstance(item, dict)}
+    if len(index_by_id) != len(details):
+        raise RuntimeError("bundle game IDs are not unique")
+    tournament_data = read_json(tournament_path) if tournament_path else {}
+    tournament_games = tournament_data.get("games") if isinstance(tournament_data.get("games"), list) else []
+    tournament_by_id = {
+        norm(item.get("oqGameId")): item for item in tournament_games if isinstance(item, dict)
+    }
+    details = sorted(details, key=lambda detail: norm(detail.get("created")))
+    tasks = [
+        bundle_task(detail, ordinal, index_by_id, tournament_by_id)
+        for ordinal, detail in enumerate(details, start=1)
+    ]
+    engine_exe = Path(args.engine).resolve()
+    expected_engine = {
+        "name": "Egaroucid for Console",
+        "path": str(engine_exe),
+        "sha256": file_sha256(engine_exe),
+        "level": int(args.level),
+        "threads": int(args.threads),
+        "hash": int(args.hash),
+        "book": str(Path(args.book).resolve()) if args.book else "enabled-default",
+    }
+    version = engine_version_text(engine_exe)
+    analyses: list[dict[str, Any]] = []
+    pending: list[GameTask] = []
+    for task in tasks:
+        path = analyzed_game_path(cache_dir, task)
+        if path.exists():
+            try:
+                cached = read_json(path)
+                if bundle_cached_analysis_complete(task, cached, expected_engine):
+                    analyses.append(cached)
+                    continue
+            except Exception:
+                pass
+        pending.append(task)
+
+    engine: PersistentEngine | None = None
+    analyzed = 0
+    node_count_since_restart = 0
+    restart_count = 0
+    node_restart = max(0, int(args.node_restart))
+    try:
+        if pending:
+            engine = open_persistent_engine(args, cache_dir)
+        for task in pending:
+            if node_restart and node_count_since_restart >= node_restart and engine is not None:
+                engine.close()
+                restart_count += 1
+                node_count_since_restart = 0
+                engine = open_persistent_engine(args, cache_dir)
+            if engine is None:
+                raise RuntimeError("Egaroucid engine is unavailable")
+            print(f"[{analyzed + 1}/{len(pending)}] analyze bundle game {task.game_id}", flush=True)
+            analysis = analyze_game(task, engine)
+            tournament = tournament_by_id.get(task.game_id)
+            analysis["created"] = norm(task.detail.get("created"))
+            analysis["finalStatus"] = norm(index_by_id[task.game_id].get("finalStatus"))
+            analysis["isTournamentGame"] = tournament is not None
+            analysis["tournament"] = tournament if tournament is not None else None
+            atomic_write_json(analyzed_game_path(cache_dir, task), analysis)
+            analyses.append(analysis)
+            analyzed += 1
+            node_count_since_restart += len(analysis.get("nodes", []))
+            atomic_write_json(
+                cache_dir / "progress.json",
+                {
+                    "schema": "ega-bundle-progress-v1",
+                    "updatedAt": now_iso(),
+                    "completedGameIds": sorted(item.get("gameId") for item in analyses),
+                    "completedCount": len(analyses),
+                    "totalCount": len(tasks),
+                    "engine": {**expected_engine, "version": version},
+                },
+            )
+    finally:
+        if engine is not None:
+            engine.close()
+
+    analyses.sort(key=lambda item: norm(item.get("created")))
+    summary = summarize_competition(cache_dir, analyses)
+    summary.update(
+        {
+            "schema": "ega-account-bundle-summary-v1",
+            "scope": "public-account-endpoint-exposed-games",
+            "account": norm(bundle.get("account")),
+            "sourceBundle": str(bundle_path),
+            "sourceBundleSha256": file_sha256(bundle_path),
+            "tournamentBundle": str(tournament_path) if tournament_path else None,
+            "tournamentBundleSha256": file_sha256(tournament_path) if tournament_path else None,
+            "tournamentGameCount": sum(bool(item.get("isTournamentGame")) for item in analyses),
+            "engine": {**expected_engine, "version": version},
+            "engineRestartCount": restart_count,
+        }
+    )
+    atomic_write_json(cache_dir / "summary.json", summary)
+    return {
+        "ok": True,
+        "gameCount": len(tasks),
+        "analyzed": analyzed,
+        "cached": len(tasks) - len(pending),
+        "tournamentGameCount": summary["tournamentGameCount"],
+        "summaryFile": str((cache_dir / "summary.json").resolve()),
+        "engine": summary["engine"],
+    }
+
+
 def lock_path(cache_dir: Path) -> Path:
     return cache_dir / "worker.lock"
 
@@ -1251,6 +1642,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_transcript.add_argument("--threads", type=int, default=32)
     p_transcript.add_argument("--hash", type=int, default=26)
     p_transcript.add_argument("--book", default="")
+    p_bundle = sub.add_parser("analyze-bundle")
+    p_bundle.add_argument("--bundle", required=True)
+    p_bundle.add_argument("--tournament-bundle", default="")
+    p_bundle.add_argument("--cache-dir", required=True)
+    p_bundle.add_argument("--engine", default=str(DEFAULT_ENGINE_EXE))
+    p_bundle.add_argument("--level", type=int, default=22)
+    p_bundle.add_argument("--threads", type=int, default=32)
+    p_bundle.add_argument("--hash", type=int, default=26)
+    p_bundle.add_argument("--book", default="")
+    p_bundle.add_argument("--node-restart", type=int, default=1000)
     return parser
 
 
@@ -1263,6 +1664,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "analyze-transcript":
         print(json.dumps(run_analyze_transcript(args), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "analyze-bundle":
+        acquire_lock(cache_dir)
+        try:
+            print(json.dumps(run_analyze_bundle(args), ensure_ascii=False, indent=2))
+            return 0
+        finally:
+            release_lock(cache_dir)
     acquire_lock(cache_dir)
     try:
         if args.command == "once":

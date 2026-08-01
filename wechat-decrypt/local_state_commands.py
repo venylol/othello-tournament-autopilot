@@ -144,7 +144,9 @@ def build_mutations(base: dict[str, Any], working: dict[str, Any]) -> list[dict[
         if isinstance(parent, dict) and parent.get("entityId"):
             mutation["expectedParentRevision"] = int(parent.get("entityRevision") or 0)
         mutations.append(mutation)
-    return mutations
+    # Child additions validate the current parent revision. Apply them before a
+    # metadata patch in the same atomic command increments that parent.
+    return sorted(mutations, key=lambda item: 0 if item.get("op") == "add" else 1)
 
 
 def command_url(state_api: str) -> str:

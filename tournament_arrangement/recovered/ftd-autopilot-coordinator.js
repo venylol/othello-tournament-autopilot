@@ -7,6 +7,8 @@ const FTD_ROUND = require("./ftd-round-shared.js");
 const FTD_TRANSCRIPT = require("./ftd-transcript-shared.js");
 
 const TERMINAL_PHASES = new Set(["done", "stopped", "failed"]);
+const READONLY_PROOF_REFRESH_MS = 20 * 60 * 1000;
+const READONLY_PROOF_ACTIONS = new Set(["writeScore", "writeTranscript", "renderPairingsImage", "renderVerifiedRoundImage"]);
 const ACTIVE_PHASES = new Set([
   "armed", "preflight", "reading-ftd", "importing-round", "polling-oq",
   "writing-scores", "verifying-scores", "preparing-transcripts",
@@ -88,6 +90,10 @@ function localDateTimeValue(timestamp) {
   const date = new Date(timestamp);
   const part = (value) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}:${part(date.getSeconds())}`;
+}
+
+function localDateValue(timestamp) {
+  return localDateTimeValue(timestamp).slice(0, 10);
 }
 
 function validScorePair(black, white) {
@@ -464,7 +470,16 @@ class FtdAutopilotCoordinator {
     if (request.tournamentId && String(request.tournamentId) !== tournamentId) throw makeCoordinatorError("scope-request-mismatch", "请求赛事与当前 FTD 链接不一致");
     if (request.localRound && Number(request.localRound) !== localRound) throw makeCoordinatorError("scope-request-mismatch", "请求轮次与当前选中轮不一致");
     if (request.localStage && request.localStage !== localStage) throw makeCoordinatorError("scope-request-mismatch", "请求阶段与当前选中阶段不一致");
-    return { tournamentId, ftdUrl, localRound, localStage, roundStartAt, roundStartSource: text(round.roundStartSource), roundCount: Number(helper.roundCount) || helper.rounds.length };
+    return {
+      tournamentId,
+      ftdUrl,
+      localRound,
+      localStage,
+      roundEntityId: text(round.entityId),
+      roundStartAt,
+      roundStartSource: text(round.roundStartSource),
+      roundCount: Number(helper.roundCount) || helper.rounds.length,
+    };
   }
 
   ensureRoundStartForStart(request = {}) {
@@ -474,7 +489,8 @@ class FtdAutopilotCoordinator {
     const round = helper && Array.isArray(helper.rounds) ? helper.rounds[localRound - 1] : null;
     if (!round) throw makeCoordinatorError("scope-invalid", "当前选中轮次不存在");
     const existing = text(round.roundStartAt, 80);
-    const validExisting = Boolean(existing && Number.isFinite(Date.parse(existing.replace(" ", "T"))));
+    const existingTimestamp = existing ? Date.parse(existing.replace(" ", "T")) : NaN;
+    const validExisting = Number.isFinite(existingTimestamp) && localDateValue(existingTimestamp) === localDateValue(this.now());
     if (validExisting && text(round.roundStartSource)) return { defaulted: false, roundStartAt: existing, roundStartSource: text(round.roundStartSource) };
     const next = deepClone(current);
     const nextRound = next.scoreHelper.rounds[localRound - 1];
@@ -546,6 +562,24 @@ class FtdAutopilotCoordinator {
     };
     this.bridge.setLiveProof(proof);
     return proof;
+  }
+
+  async ensureFreshReadOnlyProof(force = false) {
+    const scope = this.session && this.session.scope;
+    if (!scope) throw makeCoordinatorError("session-missing", "AP 会话不存在");
+    const proof = this.bridge.status().liveProof;
+    const fresh = proof && proof.tournamentId === scope.tournamentId && proof.localRound === scope.localRound &&
+      proof.localStage === scope.localStage && this.now() - Number(proof.verifiedAt || 0) < READONLY_PROOF_REFRESH_MS;
+    if (!force && fresh) return proof;
+    const refreshed = await this.readOnlyProbe(scope);
+    this.session.readOnlyProof = {
+      verifiedAt: refreshed.verifiedAt,
+      transport: refreshed.transport,
+      coexistenceObserved: refreshed.coexistenceObserved,
+      tdAccess: refreshed.tdAccess,
+    };
+    this.persist("readonly-proof-refreshed", { verifiedAt: refreshed.verifiedAt, force: force === true });
+    return refreshed;
   }
 
   async start(request = {}) {
@@ -700,6 +734,7 @@ class FtdAutopilotCoordinator {
 
   async bridgeCommand(command, timeoutMs) {
     if (!this.session.writeAllowed && ["writeScore", "writeTranscript", "renderPairingsImage", "renderVerifiedRoundImage"].includes(command.action)) throw makeCoordinatorError("writes-disabled", "外部写入已禁用");
+    if (READONLY_PROOF_ACTIONS.has(command.action)) await this.ensureFreshReadOnlyProof();
     this.session.inFlight = {
       action: command.action,
       commandId: command.commandId,
@@ -713,7 +748,17 @@ class FtdAutopilotCoordinator {
     };
     this.persist("command-dispatched", { commandId: command.commandId, action: command.action, pairingFingerprint: command.pairingFingerprint, actualFtdRound: command.actualFtdRound, targetTable: command.targetTable });
     try {
-      const result = await this.bridge.send(command, timeoutMs);
+      let result;
+      try {
+        result = await this.bridge.send(command, timeoutMs);
+      } catch (error) {
+        // A stale proof is rejected before FTD is mutated, so this exact
+        // command can safely be retried after a fresh read-only probe.
+        if (!error || error.code !== "readonly-proof-required") throw error;
+        this.persist("readonly-proof-expired-before-write", { commandId: command.commandId, action: command.action });
+        await this.ensureFreshReadOnlyProof(true);
+        result = await this.bridge.send(command, timeoutMs);
+      }
       this.persist("command-received", { commandId: command.commandId, action: command.action, result });
       return result;
     } finally {
@@ -757,7 +802,9 @@ class FtdAutopilotCoordinator {
       const importedAt = this.now();
       const merged = FTD_ROUND.mergeBridgeRoundsIntoScoreHelper(current.scoreHelper, snapshots, this.session.scope, {
         importedAt,
-        allowInactiveLockedRound: this.finishedRoundWriteTestAuthorized(this.session.scope),
+        // activeRound is intentionally browser-local. The AP session is already
+        // locked to an exact local round and validates that round below.
+        allowInactiveLockedRound: true,
       });
       const next = deepClone(current);
       next.scoreHelper = merged.scoreHelper;
@@ -790,7 +837,7 @@ class FtdAutopilotCoordinator {
 
   assertScopeStillLocked(state) {
     const scope = this.parseScope(state, this.session && this.session.scope || {});
-    for (const key of ["tournamentId", "localRound", "localStage", "roundStartAt"]) {
+    for (const key of ["tournamentId", "ftdUrl", "localRound", "localStage", "roundEntityId", "roundStartAt"]) {
       if (String(scope[key]) !== String(this.session.scope[key])) throw makeCoordinatorError("scope-changed", `锁定会话期间 ${key} 已变化`);
     }
     return scope;
@@ -833,6 +880,21 @@ class FtdAutopilotCoordinator {
     this.assertScopeStillLocked(state);
     const pollSeconds = Math.max(5, Math.trunc(Number(state.ui && state.ui.oqPollSeconds) || 60));
     this.session.phase = "polling-oq";
+    try {
+      // Refresh before the page bridge's 30-minute proof expires. This keeps
+      // AP alive during a long gap with no new OQ games.
+      await this.ensureFreshReadOnlyProof();
+      this.session.pauseReason = null;
+    } catch (error) {
+      const delay = Math.max(5000, pollSeconds * 1000);
+      this.session.pauseReason = {
+        code: text(error && error.code, 100) || "readonly-proof-refresh-failed",
+        message: text(error && error.message, 500) || "FTD 只读保活失败，AP 将继续等待",
+      };
+      this.persist("readonly-proof-refresh-waiting", { ...this.session.pauseReason, delay });
+      this.schedule(delay);
+      return;
+    }
     this.persist("oq-poll-start", { round: this.session.scope.localRound, roundStartAt: this.session.scope.roundStartAt });
     let oqResult;
     try {

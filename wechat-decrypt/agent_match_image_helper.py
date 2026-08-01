@@ -470,7 +470,7 @@ def write_frontend_state(state_path: Path, state: dict[str, Any], direct_file: b
     except local_state_commands.StateCommandConflict as exc:
         raise HelperError(f"local sync entity conflict; stale result skipped: {exc.payload}") from exc
     except (OSError, urllib.error.URLError, RuntimeError, json.JSONDecodeError) as exc:
-        raise HelperError("local sync command failed; score item was not written") from exc
+        raise HelperError(f"local sync command failed; score item was not written: {exc}") from exc
     if payload.get("changed"):
         read_frontend_state(state_path, False)
     else:
@@ -3474,11 +3474,45 @@ def sanitize_mapping_row_for_shared_state(row: dict[str, Any]) -> dict[str, Any]
     edit_audit = row.get("editAudit") if isinstance(row.get("editAudit"), dict) else None
     if edit_audit:
         next_row["editAudit"] = edit_audit
+    if str(row.get("entityId") or "").strip():
+        next_row["entityId"] = str(row.get("entityId") or "").strip()
+    if isinstance(row.get("entityRevision"), int):
+        next_row["entityRevision"] = int(row["entityRevision"])
     return next_row
 
 
 def sanitize_mapping_rows_for_shared_state(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [sanitize_mapping_row_for_shared_state(row) for row in rows if isinstance(row, dict)]
+
+
+def preserve_mapping_sync_entities(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    previous = previous if isinstance(previous, dict) else {}
+    current = current if isinstance(current, dict) else {}
+    current["entityId"] = str(previous.get("entityId") or current.get("entityId") or "mapping:metadata")
+    current["entityRevision"] = int(previous.get("entityRevision") or current.get("entityRevision") or 0)
+
+    def row_key(row: dict[str, Any]) -> str:
+        ftd_id = str(row.get("ftdId") or "").strip()
+        if ftd_id:
+            return f"id:{ftd_id}"
+        return f"name:{normalize_name_key(str(row.get('ftdName') or ''))}"
+
+    pools: dict[str, list[dict[str, Any]]] = {}
+    for row in previous.get("players") or []:
+        if isinstance(row, dict):
+            pools.setdefault(row_key(row), []).append(row)
+    for row in current.get("players") or []:
+        if not isinstance(row, dict):
+            continue
+        pool = pools.get(row_key(row)) or []
+        old = pool.pop(0) if pool else None
+        if old and str(old.get("entityId") or "").strip():
+            row["entityId"] = str(old["entityId"]).strip()
+            row["entityRevision"] = int(old.get("entityRevision") or 0)
+        else:
+            row["entityId"] = f"mapping:client:{uuid.uuid4().hex}"
+            row["entityRevision"] = 0
+    return current
 
 
 def apply_oq_validation_to_mapping_rows(
@@ -3770,15 +3804,17 @@ def build_ftd_player_account_mapping(args: argparse.Namespace) -> dict[str, Any]
     if args.write_frontend:
         state_path = Path(args.frontend_state)
         state = read_frontend_state(state_path, bool(args.direct_file))
-        state["ftdPlayerAccountMapping"] = {
+        previous_mapping = state.get("ftdPlayerAccountMapping") if isinstance(state.get("ftdPlayerAccountMapping"), dict) else {}
+        next_mapping = {
             key: value
             for key, value in result.items()
             if key not in {"players", "matched", "invalidAccounts", "ambiguous", "unmatched"}
         }
-        state["ftdPlayerAccountMapping"]["players"] = rows[:300]
-        state["ftdPlayerAccountMapping"]["invalidAccounts"] = invalid[:120]
-        state["ftdPlayerAccountMapping"]["unmatched"] = unmatched[:120]
-        state["ftdPlayerAccountMapping"]["ambiguous"] = ambiguous[:120]
+        next_mapping["players"] = rows[:300]
+        next_mapping["invalidAccounts"] = invalid[:120]
+        next_mapping["unmatched"] = unmatched[:120]
+        next_mapping["ambiguous"] = ambiguous[:120]
+        state["ftdPlayerAccountMapping"] = preserve_mapping_sync_entities(previous_mapping, next_mapping)
         nick_pool = attach_wechat_group_nicks_to_mapping_state(state, member_map_payload)
         result["wechatGroupNickCount"] = len(nick_pool.get("groupNicks") or [])
         state["savedAt"] = int(time.time() * 1000)

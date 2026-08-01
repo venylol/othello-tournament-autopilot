@@ -10,6 +10,7 @@ const {
   syncScoreRoundCountInput,
   normalizeFtdStage,
   scoreStageLabel,
+  emptyFtdPlayerRegistrationEntity,
 } = require("../app.js");
 
 const mismatchItem = {
@@ -144,5 +145,17 @@ assert.strictEqual(editingRoundCountInput.value, "7");
 assert.strictEqual(syncScoreRoundCountInput(editingRoundCountInput, 6, null), true);
 assert.strictEqual(editingRoundCountInput.value, "6");
 assert.strictEqual(syncScoreRoundCountInput(editingRoundCountInput, 6, null), false);
+
+const clearedFtdPlayers = emptyFtdPlayerRegistrationEntity({
+  entityId: "registration:metadata",
+  entityRevision: 17,
+  rows: [{ rowId: "player-1" }],
+  pendingBatch: { batchId: "old-batch" },
+});
+assert.strictEqual(clearedFtdPlayers.entityId, "registration:metadata");
+assert.strictEqual(clearedFtdPlayers.entityRevision, 17);
+assert.deepStrictEqual(clearedFtdPlayers.rows, []);
+assert.strictEqual(clearedFtdPlayers.pendingBatch, null);
+assert.deepStrictEqual(clearedFtdPlayers.consumedBatchIds, []);
 
 console.log("score-helper render tests passed");

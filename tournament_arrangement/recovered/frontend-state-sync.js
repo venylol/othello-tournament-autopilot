@@ -138,9 +138,34 @@
     }
     const before = indexEntities(base);
     const after = indexEntities(working);
+    const clearedRegistrationId = (() => {
+      const oldRegistration = base.ftdPlayerRegistration;
+      const newRegistration = working.ftdPlayerRegistration;
+      if (
+        !oldRegistration ||
+        !newRegistration ||
+        oldRegistration.entityId !== newRegistration.entityId ||
+        !Array.isArray(oldRegistration.rows) ||
+        oldRegistration.rows.length === 0 ||
+        !Array.isArray(newRegistration.rows) ||
+        newRegistration.rows.length !== 0
+      ) return "";
+      const oldValue = projection(oldRegistration, "registrationMetadata");
+      const newValue = projection(newRegistration, "registrationMetadata");
+      mutations.push({
+        op: "clearChildren",
+        collection: "rows",
+        target: { kind: "registrationMetadata", id: oldRegistration.entityId },
+        expectedRevision: oldRegistration.entityRevision,
+        set: newValue,
+        unset: Object.keys(oldValue).filter((key) => !Object.prototype.hasOwnProperty.call(newValue, key)),
+      });
+      return oldRegistration.entityId;
+    })();
     for (const [id, entry] of before) {
       const current = after.get(id);
       if (!current) {
+        if (clearedRegistrationId && entry.kind === "registrationRow" && entry.parent && entry.parent.entityId === clearedRegistrationId) continue;
         const parentId = entry.parent && entry.parent.entityId;
         const parentStillExists = !parentId || after.has(parentId);
         if (REMOVABLE_ENTITY_KINDS.has(entry.kind) && parentStillExists) {
@@ -148,6 +173,7 @@
         }
         continue;
       }
+      if (clearedRegistrationId && entry.kind === "registrationMetadata" && id === clearedRegistrationId) continue;
       const oldValue = projection(entry.object, entry.kind);
       const newValue = projection(current.object, entry.kind);
       if (!equal(oldValue, newValue)) mutations.push({
@@ -211,6 +237,7 @@
         if (change.collection === "players") state.players.push(value);
         else if (change.collection === "mappingRows" && state.ftdPlayerAccountMapping) state.ftdPlayerAccountMapping.players.push(value);
         else if (change.collection === "registrationRows" && state.ftdPlayerRegistration) state.ftdPlayerRegistration.rows.push(value);
+        else if (change.collection === "rounds" && state.scoreHelper) state.scoreHelper.rounds.push(value);
         else if (change.parentId) {
           const parentEntry = index.get(change.parentId);
           const field = { scoreRows: "ftdPairings", pending: "pending", manualPending: "manualPending", completedItems: "completed" }[change.collection];
@@ -227,7 +254,11 @@
       if (["mappingMetadata", "registrationMetadata", "scoreHelperMetadata", "round"].includes(entry.kind)) {
         const merged = { ...entry.object, ...value };
         if (entry.kind === "mappingMetadata") merged.players = entry.object.players;
-        else if (entry.kind === "registrationMetadata") merged.rows = entry.object.rows;
+        else if (entry.kind === "registrationMetadata") {
+          merged.rows = Array.isArray(change.clearedCollections) && change.clearedCollections.includes("rows")
+            ? []
+            : entry.object.rows;
+        }
         else if (entry.kind === "scoreHelperMetadata") {
           merged.rounds = entry.object.rounds;
           merged.activeRound = entry.object.activeRound;
@@ -243,8 +274,40 @@
       else entry.parent[entry.field] = value;
       applied.push(change.id);
     }
+    if (state.scoreHelper && Array.isArray(state.scoreHelper.rounds)) {
+      state.scoreHelper.rounds.sort((left, right) => Number(left && left.round) - Number(right && right.round));
+    }
     return { state, applied, conflicts };
   }
 
-  return { applyChangedEntities, buildMutations, clone, ensureClientIds, equal, indexEntities };
+  function rebaseRegistrationMetadataConflict(baseState, workingState, authoritative) {
+    if (!authoritative || authoritative.kind !== "registrationMetadata" || !authoritative.entity) return null;
+    const local = workingState && workingState.ftdPlayerRegistration;
+    const remote = authoritative.entity;
+    if (!local || !baseState || !baseState.ftdPlayerRegistration) return null;
+    if (String(local.entityId || "") !== String(authoritative.id || "")) return null;
+    const localResolver = String(local.resolverBatchId || "");
+    const remoteResolver = String(remote.resolverBatchId || "");
+    const localBatch = String(local.pendingBatch && local.pendingBatch.batchId || "");
+    const remoteBatch = String(remote.pendingBatch && remote.pendingBatch.batchId || "");
+    if (localResolver && remoteResolver && localResolver !== remoteResolver) return null;
+    if (localBatch && remoteBatch && localBatch !== remoteBatch) return null;
+    applyChangedEntities(baseState, [{
+      kind: authoritative.kind,
+      id: authoritative.id,
+      revision: authoritative.revision,
+      entity: authoritative.entity,
+    }]);
+    return buildMutations(baseState, workingState);
+  }
+
+  return {
+    applyChangedEntities,
+    buildMutations,
+    clone,
+    ensureClientIds,
+    equal,
+    indexEntities,
+    rebaseRegistrationMetadataConflict,
+  };
 });

@@ -98,7 +98,23 @@
     return Boolean(row.ftdScoreReceipt || row.ftdTranscriptReceipt || row.transcriptNotApplicable);
   }
 
-  function buildImportedPairing(snapshotRow, definition, importedAt, existing) {
+  function pairingTournamentIds(row, fallbackTournamentId) {
+    const ids = new Set();
+    for (const receipt of [row && row.ftdImportReceipt, row && row.ftdScoreReceipt, row && row.ftdTranscriptReceipt]) {
+      const tournamentId = text(receipt && receipt.tournamentId);
+      if (tournamentId) ids.add(tournamentId);
+    }
+    const fallback = text(fallbackTournamentId);
+    if (!ids.size && fallback) ids.add(fallback);
+    return ids;
+  }
+
+  function pairingIsFromDifferentTournament(row, tournamentId, fallbackTournamentId) {
+    const ids = pairingTournamentIds(row, fallbackTournamentId);
+    return ids.size === 1 && !ids.has(text(tournamentId));
+  }
+
+  function buildImportedPairing(snapshotRow, definition, importedAt, existing, tournamentId) {
     const ftdTable = Math.trunc(Number(snapshotRow.table));
     const table = localTableFor(definition, ftdTable);
     const base = {
@@ -130,6 +146,7 @@
       pairingFingerprint: text(snapshotRow.pairingFingerprint),
       ftdImportReceipt: {
         source: "chrome-ftd-bridge",
+        tournamentId: text(tournamentId),
         importedAt,
         actualFtdRound: definition.actualFtdRound,
         ftdTable,
@@ -177,6 +194,7 @@
     if (definitions.length !== snapshots.length) throw new Error("FTD readback definition count mismatch");
     const importedAt = Number(options && options.importedAt) || Date.now();
     const existing = Array.isArray(round.ftdPairings) ? round.ftdPairings : [];
+    const existingTournamentId = text(round.ftdDirectImport && round.ftdDirectImport.tournamentId);
     const existingByIdentity = new Map(existing.map((row) => [pairingIdentity(row), row]));
     const incoming = [];
     snapshots.forEach((snapshot, index) => {
@@ -192,7 +210,7 @@
           player1Id: snapshotRow.player1Id,
           pairingFingerprint: snapshotRow.pairingFingerprint,
         };
-        incoming.push(buildImportedPairing(snapshotRow, definition, importedAt, existingByIdentity.get(pairingIdentity(probe))));
+        incoming.push(buildImportedPairing(snapshotRow, definition, importedAt, existingByIdentity.get(pairingIdentity(probe)), tournamentId));
       });
     });
     if (localStage === "semifinal" && incoming.length !== 2) throw new Error(`semifinal requires 2 tables, got ${incoming.length}`);
@@ -200,7 +218,9 @@
       if (incoming.length !== 2 || !incoming.some((row) => row.ftdStage === "F") || !incoming.some((row) => row.ftdStage === "3/4")) throw new Error("combined finals require one F and one 3/4 table");
     }
     const incomingIdentities = new Set(incoming.map(pairingIdentity));
-    const changedProtected = existing.filter((row) => pairingHasProtectedLocalWork(row) && !incomingIdentities.has(pairingIdentity(row)));
+    const changedProtected = existing.filter((row) => pairingHasProtectedLocalWork(row)
+      && !incomingIdentities.has(pairingIdentity(row))
+      && !pairingIsFromDifferentTournament(row, tournamentId, existingTournamentId));
     if (changedProtected.length) throw new Error(`FTD pairing changed while ${changedProtected.length} local row(s) contain protected work`);
     round.ftdPairings = incoming.sort((a, b) => Number(a.table) - Number(b.table));
     round.ftdDirectImport = {

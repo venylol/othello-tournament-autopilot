@@ -330,7 +330,30 @@ function applyMutation(state, mutation, changed) {
   }
   assertExpected(entry, mutation.expectedRevision);
   let next;
-  if (mutation.op === "patch") {
+  if (mutation.op === "clearChildren") {
+    if (entry.kind !== "registrationMetadata" || clean(mutation.collection) !== "rows") {
+      throw new CommandError("invalid-command", "clearChildren only supports FTD Player registration rows");
+    }
+    const set = mutation.set && typeof mutation.set === "object" && !Array.isArray(mutation.set) ? mutation.set : {};
+    if (Object.keys(set).some((key) => SYNC_KEYS.has(key) || key === "rows")) {
+      throw new CommandError("invalid-command", "clearChildren metadata contains protected fields");
+    }
+    next = { ...entry.object, ...clone(set), rows: [] };
+    for (const key of Array.isArray(mutation.unset) ? mutation.unset : []) {
+      if (!SYNC_KEYS.has(key) && key !== "rows") delete next[key];
+    }
+    if (equal(entry.object, next)) return;
+    next.entityRevision = entry.object.entityRevision + 1;
+    entry.parent[entry.field] = next;
+    changed.push({
+      kind: entry.kind,
+      id: targetId,
+      revision: next.entityRevision,
+      entity: entityPayload(entry.kind, next),
+      clearedCollections: ["rows"],
+    });
+    return;
+  } else if (mutation.op === "patch") {
     const set = mutation.set && typeof mutation.set === "object" && !Array.isArray(mutation.set) ? mutation.set : {};
     if (Object.keys(set).some((key) => SYNC_KEYS.has(key))) throw new CommandError("invalid-command", "sync identity fields are immutable");
     next = { ...entry.object, ...clone(set) };
@@ -496,7 +519,18 @@ function applyOqResolution(state, command, changed) {
 function applyRoundImport(state, command, changed) {
   const payload = command.payload && typeof command.payload === "object" ? command.payload : {};
   const index = entityIndex(state);
-  const roundEntry = index.get(clean(command.target && command.target.id));
+  let roundEntry = index.get(clean(command.target && command.target.id));
+  if (!roundEntry) {
+    const roundPatch = payload.roundPatch && typeof payload.roundPatch === "object" ? payload.roundPatch : {};
+    const requestedRound = Math.trunc(Number(roundPatch.round));
+    const requestedStage = clean(roundPatch.stage);
+    const candidates = [...index.values()].filter((entry) =>
+      entry.kind === "round" &&
+      Number(entry.object.round) === requestedRound &&
+      (!requestedStage || clean(entry.object.stage) === requestedStage)
+    );
+    if (candidates.length === 1) roundEntry = candidates[0];
+  }
   if (!roundEntry || roundEntry.kind !== "round") throw new CommandError("entity-not-found", "round import target was not found");
   assertExpected(roundEntry, command.expectedRevision);
   const scorePreconditionIds = new Set();
@@ -617,6 +651,92 @@ function applyRoundImport(state, command, changed) {
   }
 }
 
+function applyScoreHelperConfigureRounds(state, command, changed) {
+  const helper = state.scoreHelper;
+  if (!helper || helper.entityId !== clean(command.target && command.target.id)) {
+    throw new CommandError("entity-not-found", "score helper metadata was not found");
+  }
+  assertExpected({ object: helper }, command.expectedRevision);
+  const payload = command.payload && typeof command.payload === "object" ? command.payload : {};
+  const preliminaryRoundCount = Math.trunc(Number(payload.preliminaryRoundCount));
+  if (!Number.isInteger(preliminaryRoundCount) || preliminaryRoundCount < 1 || preliminaryRoundCount > 9) {
+    throw new CommandError("invalid-command", "preliminaryRoundCount must be between 1 and 9");
+  }
+  const oldRounds = Array.isArray(helper.rounds) ? helper.rounds : [];
+  const used = new Set();
+  const desired = [];
+  const findExisting = (stage, round) => oldRounds.find((item) =>
+    !used.has(item.entityId) && clean(item.stage) === stage && (round == null || Number(item.round) === round)
+  );
+  const append = (stage, round) => {
+    const existing = findExisting(stage, stage === "preliminary" ? round : null);
+    let next;
+    if (existing) {
+      used.add(existing.entityId);
+      next = clone(existing);
+      if (Number(next.round) !== round || clean(next.stage) !== stage) {
+        next.round = round;
+        next.stage = stage;
+        next.entityRevision += 1;
+        changed.push({ kind: "round", id: next.entityId, revision: next.entityRevision, entity: entityPayload("round", next) });
+      }
+    } else {
+      const id = stableId("round", `${stage}:${round}`);
+      next = ensureEntity({
+        round,
+        stage,
+        roundStartAt: "",
+        roundStartSource: "",
+        pending: [],
+        manualPending: [],
+        completed: [],
+        ftdPairings: [],
+      }, id);
+      used.add(id);
+      changed.push({
+        kind: "round",
+        id,
+        revision: 0,
+        entity: clone(next),
+        collection: "rounds",
+        parentId: helper.entityId,
+      });
+    }
+    desired.push(next);
+  };
+  for (let round = 1; round <= preliminaryRoundCount; round += 1) append("preliminary", round);
+  append("semifinal", preliminaryRoundCount + 1);
+  append("finals", preliminaryRoundCount + 2);
+  for (const old of oldRounds) {
+    if (!used.has(old.entityId)) {
+      changed.push({ kind: "round", id: old.entityId, revision: old.entityRevision + 1, removed: true });
+    }
+  }
+  const requestedActive = Math.trunc(Number(payload.activeRound));
+  const activeRound = Number.isInteger(requestedActive) && requestedActive >= 1
+    ? Math.min(preliminaryRoundCount + 2, requestedActive)
+    : Math.max(1, Math.min(preliminaryRoundCount + 2, Math.trunc(Number(helper.activeRound) || 1)));
+  const nextHelper = {
+    ...helper,
+    preliminaryRoundCount,
+    roundCount: preliminaryRoundCount + 2,
+    roundCountSource: ["manual", "auto"].includes(clean(payload.roundCountSource))
+      ? clean(payload.roundCountSource)
+      : helper.roundCountSource,
+    activeRound,
+    rounds: desired,
+    updatedAt: Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : Date.now(),
+    entityRevision: helper.entityRevision + 1,
+  };
+  state.scoreHelper = nextHelper;
+  changed.push({
+    kind: "scoreHelperMetadata",
+    id: nextHelper.entityId,
+    revision: nextHelper.entityRevision,
+    entity: entityPayload("scoreHelperMetadata", nextHelper),
+  });
+}
+
 function commandLogEntry(state, commandId) {
   return (state.localSync.commandIds || []).find((item) => item.id === commandId) || null;
 }
@@ -678,6 +798,8 @@ function applyCommand(inputState, envelope) {
     applyOqResolution(state, command, changedEntities);
   } else if (command.type === "round.import") {
     applyRoundImport(state, command, changedEntities);
+  } else if (command.type === "scoreHelper.configureRounds") {
+    applyScoreHelperConfigureRounds(state, command, changedEntities);
   } else {
     throw new CommandError("unsupported-command", `unsupported command type ${command.type}`);
   }
@@ -686,13 +808,14 @@ function applyCommand(inputState, envelope) {
   state.localSync.commandIds = [...(state.localSync.commandIds || []), {
     id: commandId,
     revision: state.localSync.revision,
-    changedEntities: changedEntities.map(({ kind, id, revision, removed, collection, parentId }) => ({
+    changedEntities: changedEntities.map(({ kind, id, revision, removed, collection, parentId, clearedCollections }) => ({
       kind,
       id,
       revision,
       removed: Boolean(removed),
       ...(collection ? { collection } : {}),
       ...(parentId ? { parentId } : {}),
+      ...(clearedCollections ? { clearedCollections: clone(clearedCollections) } : {}),
     })),
   }].slice(-500);
   return { state, changed: true, idempotent: false, revision: state.localSync.revision, changedEntities };

@@ -145,6 +145,34 @@ async function run() {
   }
 
   {
+    const firstRoundPairing = makePairing(1, "completed", "previous-round-game", {
+      ftdRound: 1,
+      ftdTable: 1,
+    });
+    const sourceState = {
+      ...makeState([]),
+      scoreHelper: {
+        version: 1,
+        roundCount: 2,
+        activeRound: 2,
+        rounds: [
+          { round: 1, pending: [], manualPending: [], completed: [], ftdPairings: [firstRoundPairing] },
+          { round: 2, pending: [], manualPending: [], completed: [], ftdPairings: [] },
+        ],
+      },
+    };
+    const packet = await prepareFtdTranscriptPacket(sourceState, { round: 1, tournamentId: "593" }, {
+      fetchGameDetail: async (gameId) => ({
+        id: gameId,
+        position: { startPos: "", moves: [{ m: "f5" }, { m: "d6" }] },
+      }),
+    });
+    assert.strictEqual(packet.round, 1);
+    assert.deepStrictEqual(packet.games.map((item) => item.oqGameId), ["previous-round-game"]);
+    assert.deepStrictEqual(packet.games.map((item) => item.ftdRound), [1]);
+  }
+
+  {
     const ready = makePairing(1, "ready", "ready-game", {
       blackScore: 38,
       whiteScore: 26,

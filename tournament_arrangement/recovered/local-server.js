@@ -1041,9 +1041,6 @@ async function prepareFtdTranscriptPacket(state, request = {}, options = {}) {
   const rounds = Array.isArray(helper.rounds) ? helper.rounds : [];
   const activeRound = Math.trunc(Number(helper.activeRound) || 1);
   const requestedRound = Math.trunc(Number(request.round) || activeRound);
-  if (requestedRound !== activeRound) {
-    throw new Error(`只能准备当前活动轮次；当前为第 ${activeRound} 轮`);
-  }
   const round = rounds.find((item, index) => {
     const roundNo = Math.trunc(Number(item && item.round) || index + 1);
     return roundNo === requestedRound;

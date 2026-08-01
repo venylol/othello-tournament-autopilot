@@ -121,6 +121,7 @@ pending 由 agent 和用户（裁判）共同处理。每轮轮询中只要发�
 ## 常用路径
 
 - 本地页面源码：`tournament_arrangement\recovered`
+- 选手分析工具门户：`player_analysis_toolkit`
 - 共享状态文件：`tournament_arrangement\recovered\data\checkin-state.json`
 - Agent 比赛辅助入口：`wechat-decrypt\agent_tournament_helper.cmd`
 - 无差别组流程 PDF：`无差别\2026栢龙杯棋王赛无差别组比赛流程指南.pdf`

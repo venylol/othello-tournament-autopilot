@@ -65,6 +65,7 @@ function run() {
   assert.strictEqual(prelimMerge.pairings[3].status, "completed");
   assert.strictEqual(prelimMerge.pairings[3].transcriptNotApplicable.reason, "bye");
   assert.strictEqual(prelimMerge.pairings[0].gameId, "game-1-1");
+  assert.strictEqual(prelimMerge.pairings[0].ftdImportReceipt.tournamentId, "593");
 
   const sf = roundSnapshot("593", 6, "SF", [{}, {}]);
   const sfMerge = FTD.mergeBridgeRoundsIntoScoreHelper(helper("semifinal"), [sf], {
@@ -84,6 +85,29 @@ function run() {
   const protectedRow = { ...prelimMerge.pairings[0], status: "dirty", dirty: true };
   assert.throws(() => FTD.mergeBridgeRoundsIntoScoreHelper(helper("preliminary", 1, [protectedRow]), [roundSnapshot("593", 1, "", [{ gameId: "changed" }])], {
     tournamentId: "593", localRound: 1, localStage: "preliminary", definitions: [{ ftdStage: "", actualFtdRound: 1 }],
+  }), /pairing changed/);
+
+  const staleFinalsRows = finalsMerge.pairings.map((row) => {
+    const stale = { ...row, status: "completed", ftdImportReceipt: { ...row.ftdImportReceipt } };
+    delete stale.ftdImportReceipt.tournamentId;
+    stale.ftdScoreReceipt = { tournamentId: "593" };
+    return stale;
+  });
+  const currentFinal = roundSnapshot("610", 110, "F", [{ gameId: "current-final" }]);
+  const currentThird = roundSnapshot("610", 109, "3/4", [{ gameId: "current-third" }]);
+  const currentFinalsMerge = FTD.mergeBridgeRoundsIntoScoreHelper(helper("finals", 1, staleFinalsRows), [currentFinal, currentThird], {
+    tournamentId: "610", localRound: 1, localStage: "finals",
+    definitions: [{ ftdStage: "F", actualFtdRound: 110 }, { ftdStage: "3/4", actualFtdRound: 109 }],
+  }, { importedAt: 1300 });
+  assert.deepStrictEqual(currentFinalsMerge.pairings.map((row) => [row.table, row.gameId, row.status]), [
+    [1, "current-final", "imported"],
+    [2, "current-third", "imported"],
+  ]);
+  assert.ok(currentFinalsMerge.pairings.every((row) => row.ftdImportReceipt.tournamentId === "610"));
+
+  const unknownProtected = { ...protectedRow, ftdImportReceipt: null };
+  assert.throws(() => FTD.mergeBridgeRoundsIntoScoreHelper(helper("preliminary", 1, [unknownProtected]), [roundSnapshot("610", 1, "", [{ gameId: "unknown-source-change" }])], {
+    tournamentId: "610", localRound: 1, localStage: "preliminary", definitions: [{ ftdStage: "", actualFtdRound: 1 }],
   }), /pairing changed/);
   assert.throws(() => FTD.assertBridgeRound({ ...prelim, tournamentId: "wrong" }, "593", { ftdStage: "", actualFtdRound: 1 }), /tournament mismatch/);
   assert.throws(() => FTD.assertBridgeRound({ ...prelim, actualFtdRound: 2 }, "593", { ftdStage: "", actualFtdRound: 1 }), /actual round mismatch/);

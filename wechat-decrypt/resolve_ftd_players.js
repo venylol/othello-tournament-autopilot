@@ -604,6 +604,8 @@ async function resolveState(state, revision, queryFn, randomFn, nowIso, batchId)
     rows,
     pendingBatch: null,
     consumedBatchIds: Array.isArray(registration.consumedBatchIds) ? registration.consumedBatchIds : [],
+    entityId: registration.entityId,
+    entityRevision: registration.entityRevision,
   };
   return { registration: nextRegistration, summary, review };
 }
@@ -622,6 +624,9 @@ async function getState(api) {
 async function postState(api, state, revision, registration) {
   const nextState = { ...state, ftdPlayerRegistration: registration, savedAt: Date.now() };
   const diff = STATE_COMMANDS.diffState(state, nextState);
+  const mutations = [...diff.mutations].sort((left, right) =>
+    Number(right.op === "add") - Number(left.op === "add")
+  );
   const response = await fetch(`${api.replace(/\/+$/, "")}/commands`, {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8", Accept: "application/json" },
@@ -629,7 +634,7 @@ async function postState(api, state, revision, registration) {
       commandId: `agent-resolve-ftd-players-${registration.resolverBatchId}`,
       type: "entities.mutate",
       actor: "agent",
-      payload: { mutations: diff.mutations },
+      payload: { mutations },
     }),
   });
   const payload = await response.json().catch(() => null);

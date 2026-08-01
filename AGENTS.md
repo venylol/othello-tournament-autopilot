@@ -1,5 +1,15 @@
 # Agent Notes
 
+## Reusable Script Policy
+
+- Before writing task-specific automation, first look for and reuse a suitable
+  script already present in the repository.
+- If no suitable script exists, add a reusable script to the appropriate
+  repository/tool directory and use that script for the task.
+- Do not create a temporary directory merely to hold scripts. Explicitly
+  requested investigation/output directories remain appropriate for generated
+  artifacts and run provenance.
+
 ## Current FTD Player/OQ Mapping Flow
 
 Use one script entrypoint only: `wechat-decrypt\agent_tournament_helper.cmd`.

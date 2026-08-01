@@ -104,7 +104,7 @@
         ? status
         : "";
     const consoleState = raw.console && typeof raw.console === "object" ? raw.console : {};
-    return {
+    const safe = {
       rowId,
       playerId: Math.trunc(playerId),
       rosterName: text(raw.rosterName),
@@ -136,6 +136,9 @@
         tournamentId: text(consoleState.tournamentId),
       },
     };
+    if (text(raw.entityId)) safe.entityId = text(raw.entityId);
+    if (Number.isInteger(Number(raw.entityRevision))) safe.entityRevision = Number(raw.entityRevision);
+    return safe;
   }
 
   function sanitizeBatchRow(raw) {
@@ -213,6 +216,8 @@
     safe.consumedBatchIds = Array.isArray(raw.consumedBatchIds)
       ? Array.from(new Set(raw.consumedBatchIds.map(text).filter(Boolean))).slice(-50)
       : [];
+    if (text(raw.entityId)) safe.entityId = text(raw.entityId);
+    if (Number.isInteger(Number(raw.entityRevision))) safe.entityRevision = Number(raw.entityRevision);
     return safe;
   }
 

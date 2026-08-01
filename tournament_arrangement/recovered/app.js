@@ -603,7 +603,7 @@
     }
 
     if (!localSyncBaseState) return null;
-    const mutations = STATE_SYNC.buildMutations(localSyncBaseState, state);
+    let mutations = STATE_SYNC.buildMutations(localSyncBaseState, state);
     if (!mutations.length) {
       localSaveDirty = false;
       return { ok: true, changed: false, revision: localSyncLastRevision, changedEntities: [] };
@@ -614,25 +614,45 @@
       localSyncPushInFlight = true;
       if (showStatus) setLocalSyncStatus("busy", "本地同步：保存中");
       try {
-        const response = await fetch(LOCAL_SYNC_COMMAND_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            commandId: `${LOCAL_SYNC_CLIENT_ID}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-            type: "entities.mutate",
-            actor: "user",
-            payload: { mutations },
-          }),
-        });
-        const result = await response.json().catch(() => null);
-        if (!response.ok || !result || result.ok !== true) {
+        let result = null;
+        let registrationMetadataRetried = false;
+        while (true) {
+          const response = await fetch(LOCAL_SYNC_COMMAND_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+              commandId: `${LOCAL_SYNC_CLIENT_ID}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              type: "entities.mutate",
+              actor: "user",
+              payload: { mutations },
+            }),
+          });
+          result = await response.json().catch(() => null);
+          if (response.ok && result && result.ok === true) break;
           const conflict = new Error(
             (result && (result.detail || result.error)) ||
               `HTTP ${response.status}`,
           );
           conflict.status = response.status;
           conflict.payload = result;
+          const authoritative = result && result.authoritativeEntity;
+          if (!registrationMetadataRetried && response.status === 409 && authoritative) {
+            const rebased = STATE_SYNC.rebaseRegistrationMetadataConflict(
+              localSyncBaseState,
+              state,
+              authoritative,
+            );
+            if (rebased) {
+              mutations = rebased;
+              registrationMetadataRetried = true;
+              if (!mutations.length) {
+                localSaveDirty = false;
+                return { ok: true, changed: false, revision: localSyncLastRevision, changedEntities: [] };
+              }
+              continue;
+            }
+          }
           throw conflict;
         }
         localSyncLastRevision = Number(result.revision);
@@ -848,6 +868,9 @@
   async function mergeFtdRoundIntoScoreHelper(ftdRound, options = {}) {
     const payload = ftdRound && typeof ftdRound === "object" ? ftdRound : null;
     if (!payload) throw new Error("FTD 轮次数据为空");
+
+    const latestState = await fetchLatestLocalSyncStateForAction();
+    applyRemoteState(latestState, { silentStatus: true });
 
     const helper = ensureScoreHelper();
     const activeRound = getActiveScoreRound(helper);
@@ -1999,12 +2022,19 @@
     const rounds = [];
     for (let i = 0; i < roundCount; i++) {
       const stage = scoreStageForIndex(i, preliminaryRoundCount);
+      const preliminarySource = sourceRounds.find((round, index) => {
+        const sourceStage = normalizeWhitespace(round && round.stage);
+        const sourceRound = Number.isFinite(Number(round && round.round))
+          ? Math.trunc(Number(round.round))
+          : index + 1;
+        return sourceStage === SCORE_STAGE_PRELIMINARY && sourceRound === i + 1;
+      });
       const source =
         stage === SCORE_STAGE_SEMIFINAL
           ? semifinalSource || (isStageAware ? sourceRounds[i] : null)
           : stage === SCORE_STAGE_FINALS
             ? finalsSource || (isStageAware ? sourceRounds[i] : null)
-            : sourceRounds[i];
+            : preliminarySource || (!isStageAware ? sourceRounds[i] : null);
       rounds.push(sanitizeScoreRound(source, i + 1, stage));
     }
     const activeRaw = Number(obj.activeRound);
@@ -6422,9 +6452,9 @@
               );
               if (!mergedPlayers || mergedPlayers.length === 0) return;
 
-              // Reset ids with new list
+              const previousNextPlayerId = state.nextPlayerId;
               state.nextPlayerId = 1;
-              state.players = mergedPlayers.map((p) => {
+              const importedPlayers = mergedPlayers.map((p, index) => {
                 const safe = makePlayer(p, {
                   isNew: Boolean(p.isNew),
                   group: p.group,
@@ -6435,42 +6465,18 @@
                 safe.account = p.account || "";
                 safe.club = p.club || "";
                 safe.displayName = p.displayName || "";
+                safe.id = index + 1;
                 return safe;
               });
-
-              state.players.sort(comparePlayersForList);
-
-              state.competitionName = detectedCompetitionName || "比赛签到表";
-              state.step = "checkin";
-              viewStepOverride = null;
-
-              // If current group filter doesn't exist, reset
-              if (
-                state.ui &&
-                state.ui.group !== "all" &&
-                !state.players.some((p) => p.group === state.ui.group)
-              ) {
-                state.ui.group = "all";
-              }
-
-              // UI
-              if (competitionTitleEl)
-                competitionTitleEl.textContent = state.competitionName;
-              if (competitionNameInput)
-                competitionNameInput.value = state.competitionName;
-
-              if (searchBox) searchBox.value = "";
-              if (addPlayerNameInput) addPlayerNameInput.value = "";
-
-              applyStepUI();
-              refreshCheckinUI();
-              scheduleSave();
-              showSnackbar("已开始签到（进度会自动保存）", 2400);
-
-              // Auto show suspects panel (after this preview dialog closes)
-              window.setTimeout(() => {
-                maybeAutoShowSuspectsAfterImport();
-              }, 0);
+              state.nextPlayerId = previousNextPlayerId;
+              importedPlayers.sort(comparePlayersForList);
+              void resetTournamentFromRelayImport({
+                competitionName: detectedCompetitionName || "比赛签到表",
+                clubText,
+                relayText,
+                groupRules: readGroupRulesFromEditor(),
+                players: importedPlayers,
+              });
             },
           },
         ],
@@ -6478,6 +6484,92 @@
     } catch (e) {
       console.error("导入时发生错误：", e);
       showAlert("处理失败", "处理导入数据时发生未知错误。");
+    }
+  }
+
+  function preliminaryRoundCountForPlayerCount(playerCount) {
+    const count = Math.max(0, Math.trunc(Number(playerCount) || 0));
+    if (count < 32) return 5;
+    if (count < 64) return 6;
+    return 7;
+  }
+
+  async function resetTournamentFromRelayImport(imported) {
+    try {
+      if (saveTimer) {
+        window.clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      if (localSyncPushTimer) {
+        window.clearTimeout(localSyncPushTimer);
+        localSyncPushTimer = null;
+      }
+      if (localSyncPushPromise) await localSyncPushPromise;
+
+      const fresh = initialState();
+      fresh.step = "checkin";
+      fresh.competitionName = imported.competitionName || "比赛签到表";
+      fresh.clubText = String(imported.clubText || "");
+      fresh.relayText = String(imported.relayText || "");
+      fresh.groupRules = sanitizeGroupRules(imported.groupRules);
+      fresh.players = Array.isArray(imported.players) ? imported.players : [];
+      fresh.nextPlayerId = fresh.players.reduce(
+        (max, player) => Math.max(max, Math.trunc(Number(player && player.id) || 0)),
+        0,
+      ) + 1;
+      const preliminaryRoundCount = preliminaryRoundCountForPlayerCount(fresh.players.length);
+      fresh.scoreHelper = createDefaultScoreHelper(preliminaryRoundCount);
+      fresh.scoreHelper.roundCountSource = "auto";
+      fresh.scoreHelper.autoRoundCountPlayerCount = fresh.players.length;
+      fresh.scoreHelper.updatedAt = now();
+      fresh.savedAt = now();
+
+      let loaded = fresh;
+      if (LOCAL_SYNC_ENABLED) {
+        const latestResponse = await fetch(`${LOCAL_SYNC_STATE_URL}?t=${Date.now()}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        const latest = await latestResponse.json().catch(() => null);
+        if (!latestResponse.ok || !latest || latest.ok !== true) {
+          throw new Error((latest && (latest.detail || latest.error)) || `HTTP ${latestResponse.status}`);
+        }
+        const resetResponse = await fetch(LOCAL_SYNC_STATE_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          cache: "no-store",
+          body: JSON.stringify({
+            operation: "reset",
+            expectedRevision: Number(latest.revision),
+            state: fresh,
+          }),
+        });
+        const resetResult = await resetResponse.json().catch(() => null);
+        if (!resetResponse.ok || !resetResult || resetResult.ok !== true || !resetResult.state) {
+          throw new Error((resetResult && (resetResult.detail || resetResult.error)) || `HTTP ${resetResponse.status}`);
+        }
+        loaded = resetResult.state;
+        localSyncLastRevision = Number(loaded.localSync && loaded.localSync.revision) || Number(resetResult.revision) || 0;
+      }
+
+      const sanitized = sanitizeLoadedState(loaded);
+      if (!sanitized || !Array.isArray(sanitized.players) || !sanitized.players.length) {
+        throw new Error("新比赛状态未能通过前端校验");
+      }
+      state = sanitized;
+      localSyncBaseState = deepClone(sanitized);
+      localSaveDirty = false;
+      localSyncPendingPush = false;
+      lastLocalEditAt = 0;
+      viewStepOverride = null;
+      if (searchBox) searchBox.value = "";
+      if (addPlayerNameInput) addPlayerNameInput.value = "";
+      applyStateToUI(true);
+      showSnackbar(`已清理旧比赛并导入 ${state.players.length} 人，预赛 ${preliminaryRoundCount} 轮`, 3200);
+      window.setTimeout(() => maybeAutoShowSuspectsAfterImport(), 0);
+    } catch (error) {
+      console.error("新比赛原子导入失败：", error);
+      showAlert("导入失败", `旧比赛状态未清除，新名单也未写入。\n\n${error && error.message ? error.message : error}`);
     }
   }
 
@@ -7727,22 +7819,58 @@
     return true;
   }
 
+  async function submitScoreRoundConfiguration(preliminaryRoundCount, activeRound, source = "manual") {
+    const baseHelper = localSyncBaseState && localSyncBaseState.scoreHelper;
+    if (!baseHelper || !baseHelper.entityId) throw new Error("共享状态缺少比分助手实体身份");
+    const response = await fetch(LOCAL_SYNC_COMMAND_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        commandId: `${LOCAL_SYNC_CLIENT_ID}-configure-rounds-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        type: "scoreHelper.configureRounds",
+        actor: "user",
+        target: { kind: "scoreHelperMetadata", id: baseHelper.entityId },
+        expectedRevision: baseHelper.entityRevision,
+        payload: {
+          preliminaryRoundCount,
+          activeRound,
+          roundCountSource: source,
+          updatedAt: now(),
+        },
+      }),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result || result.ok !== true) {
+      throw new Error((result && (result.detail || result.error)) || `HTTP ${response.status}`);
+    }
+    STATE_SYNC.applyChangedEntities(localSyncBaseState, result.changedEntities || []);
+    STATE_SYNC.applyChangedEntities(state, result.changedEntities || []);
+    localSyncLastRevision = Number(result.revision) || localSyncLastRevision;
+    if (state.localSync) state.localSync.revision = localSyncLastRevision;
+    if (localSyncBaseState.localSync) localSyncBaseState.localSync.revision = localSyncLastRevision;
+    return result;
+  }
+
   async function applyScoreRoundSettings() {
-    const snapshot = captureUndoSnapshot();
-    const appliedPreliminaryCount = setScoreRoundCount(
-      scoreRoundCountInput && scoreRoundCountInput.value,
-      { source: "manual" },
+    const helper = ensureScoreHelper();
+    const appliedPreliminaryCount = Math.max(
+      1,
+      Math.min(
+        MAX_PRELIMINARY_ROUNDS,
+        Math.trunc(Number(scoreRoundCountInput && scoreRoundCountInput.value) || helper.preliminaryRoundCount || 1),
+      ),
     );
     const expectedRoundCount = appliedPreliminaryCount + SCORE_FINAL_STAGE_COUNT;
-    syncActiveScoreRoundStartFromInput();
-    renderScoreHelper();
-
-    localSaveDirty = true;
-    state.savedAt = now();
-    lastLocalEditAt = state.savedAt;
     if (btnScoreApplyRounds) setBtnBusy(btnScoreApplyRounds, true, "保存中…", "应用");
 
     try {
+      await submitScoreRoundConfiguration(appliedPreliminaryCount, helper.activeRound, "manual");
+      syncActiveScoreRoundStartFromInput();
+      renderScoreHelper();
+      localSaveDirty = true;
+      state.savedAt = now();
+      lastLocalEditAt = state.savedAt;
       const syncResult = await saveAndPushLocalSyncNow();
       if (!syncResult || syncResult.ok !== true) {
         throw new Error("本地共享状态写入失败");
@@ -7758,18 +7886,7 @@
         );
       }
 
-      showUndoSnackbar(`已更新预赛轮次：${appliedPreliminaryCount} 轮`, async () => {
-        restoreUndoSnapshot(snapshot);
-        localSaveDirty = true;
-        state.savedAt = now();
-        lastLocalEditAt = state.savedAt;
-        const undoResult = await saveAndPushLocalSyncNow();
-        if (!undoResult || undoResult.ok !== true) {
-          showAlert("撤销保存失败", "轮次已在当前页面撤销，但未能写入本地共享状态，请检查本地同步连接。");
-          return;
-        }
-        showSnackbar("已撤销轮次设置", 1800);
-      });
+      showSnackbar(`已更新预赛轮次：${appliedPreliminaryCount} 轮`, 2200);
     } catch (error) {
       const detail = error && error.message ? String(error.message) : String(error || "");
       showAlert(
@@ -12782,7 +12899,7 @@
       if (/127\.0\.0\.1|localhost|\/api\/ftd-round/i.test(code + rendererSource)) {
         throw new Error("脚本包含本地 POST/API 访问，已拒绝复制");
       }
-      const helper = sanitizeScoreHelper(latestState.scoreHelper || state.scoreHelper);
+      const helper = sanitizeScoreHelper(state.scoreHelper || latestState.scoreHelper);
       const targetRound =
         Number.isFinite(Number(helper.activeRound)) && Number(helper.activeRound) > 0
           ? Math.trunc(Number(helper.activeRound))
@@ -15694,6 +15811,7 @@
       ftdPairingRowStatusClass,
       ftdBatchItemKey,
       formatFtdTranscriptNoEligibleMessage,
+      emptyFtdPlayerRegistrationEntity,
     };
     return;
   }

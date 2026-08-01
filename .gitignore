@@ -51,6 +51,8 @@ tournament_arrangement/recovered/chrome-ftd-bridge.crx
 tournament_arrangement/historical_sample/
 tournament-metadata/exports/
 tournament-metadata/no-handicap/
+player_analysis_toolkit/investigations/
+player_analysis_toolkit/__pycache__/
 
 # Local databases and transient files
 *.db

@@ -162,7 +162,7 @@ def call_match(common: list[str], tail: list[str], command: str) -> int:
     return agent_match_image_helper.main(common + [command] + tail)
 
 
-def call_self_check(tail: list[str]) -> int:
+def call_self_check(common: list[str], tail: list[str]) -> int:
     if not SELF_CHECK_SCRIPT.exists():
         print(
             json.dumps(
@@ -176,8 +176,12 @@ def call_self_check(tail: list[str]) -> int:
             )
         )
         return 1
+    group_args = []
+    for index in range(0, len(common), 2):
+        if common[index] == "--group" and index + 1 < len(common):
+            group_args.extend(common[index : index + 2])
     completed = subprocess.run(
-        ["node", str(SELF_CHECK_SCRIPT), *tail],
+        ["node", str(SELF_CHECK_SCRIPT), *group_args, *tail],
         cwd=str(SELF_CHECK_SCRIPT.parent),
         text=True,
     )
@@ -247,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     if command in checkin_commands:
         return call_checkin(common, tail, checkin_commands[command])
     if command == "self-check":
-        return call_self_check(tail)
+        return call_self_check(common, tail)
     if command == "resolve-ftd-players":
         return call_resolve_ftd_players(tail)
     if command in match_commands:
