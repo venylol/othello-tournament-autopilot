@@ -6,17 +6,20 @@
 所有文本输入输出均使用 UTF-8。脚本不会删除输入或既有结果文件；输出路径
 如果需要覆盖，应由使用者先明确处理。
 
+大型公开训练数据和模型不提交到 Git；版本化下载与校验方式见
+[`DATASETS.md`](DATASETS.md)。
+
 ## 文件
 
-- `player_analysis.py`：数据汇总、子损、用时、个人开局库、留一法开局比较、
+- `scripts/analysis/player_analysis.py`：数据汇总、子损、用时、个人开局库、留一法开局比较、
   外部参照组比较及统一运行入口。
-- `analysis_core.py`：棋盘回放、8种对称归一化和全部统计函数。
-- `standard_openings.json`：可手工维护的标准定式名称、别名和着手序列表。
-- `agent_offbook_review.py`：生成逐 ply 人工审查包、校验 Agent 手工脱谱标记，
+- `src/player_analysis_toolkit/analysis_core.py`：棋盘回放、8种对称归一化和全部统计函数。
+- `assets/standard_openings.json`：可手工维护的标准定式名称、别名和着手序列表。
+- `scripts/review/agent_offbook_review.py`：生成逐 ply 人工审查包、校验 Agent 手工脱谱标记，
   并计算包含脱谱手在内的脱谱后统计。
-- `render_github_pdf.py`：把 Markdown 渲染成 GitHub Issue 风格 HTML/PDF。
-- `generate_review_checklist.py`：从既有调查 JSON 和固定模板生成审核信息速览表。
-- `review_checklist_template.md`：审核信息速览表的 Markdown 模板。
+- `scripts/reporting/render_github_pdf.py`：把 Markdown 渲染成 GitHub Issue 风格 HTML/PDF。
+- `scripts/review/generate_review_checklist.py`：从既有调查 JSON 和固定模板生成审核信息速览表。
+- `templates/review_checklist_template.md`：审核信息速览表的 Markdown 模板。
 - `METHOD.md`：当前分析方法及各项结果的含义。
 
 ## 环境
@@ -29,7 +32,7 @@
 ## 1. 汇总 OQ 数据
 
 ```powershell
-python player_analysis.py summary `
+python scripts/analysis/player_analysis.py summary `
   --bundle "C:\path\account-bundle.json" `
   --account "player_id" `
   --output-dir "C:\path\output\summary"
@@ -44,7 +47,7 @@ python player_analysis.py summary `
 ## 2. 建立特定选手 Human Frequency Book
 
 ```powershell
-python player_analysis.py build-book `
+python scripts/analysis/player_analysis.py build-book `
   --bundle "C:\path\account-bundle.json" `
   --account "player_id" `
   --color white `
@@ -66,7 +69,7 @@ python player_analysis.py build-book `
 ## 3. 分析被报告局与留一法对照局的开局
 
 ```powershell
-python player_analysis.py opening `
+python scripts/analysis/player_analysis.py opening `
   --bundle "C:\path\account-bundle.json" `
   --account "player_id" `
   --reported-game-id "reported_game_1" `
@@ -83,7 +86,7 @@ python player_analysis.py opening `
 对局：
 
 ```powershell
-python player_analysis.py standard-opening `
+python scripts/analysis/player_analysis.py standard-opening `
   --bundle "C:\path\account-bundle.json" `
   --account "player_id" `
   --game-id "game_id" `
@@ -93,7 +96,7 @@ python player_analysis.py standard-opening `
 筛选所有包含指定定式的对局：
 
 ```powershell
-python player_analysis.py standard-opening `
+python scripts/analysis/player_analysis.py standard-opening `
   --bundle "C:\path\account-bundle.json" `
   --account "player_id" `
   --opening "tanida" `
@@ -145,20 +148,20 @@ Frequency Book，须明确其弱参考地位。登记脚本会拒绝空备注，
 主要证据，后者只是弱历史参考：
 
 ```powershell
-python agent_offbook_review.py offbook-packet `
+python scripts/review/agent_offbook_review.py offbook-packet `
   --bundle "C:\path\account-bundle.json" `
-  --account "Z779" `
+  --account "sample_player" `
   --mode target `
   --exclude-from-book-game-id "reported_game_1" `
   --exclude-from-book-game-id "reported_game_2" `
-  --output "C:\path\z779-offbook-packet.json"
+  --output "C:\path\sample_player-offbook-packet.json"
 ```
 
 排行榜高分选手使用 `--mode reference`。参照组包只给出每个 ply 的原始用时，
 不生成 Frequency Book 情况：
 
 ```powershell
-python agent_offbook_review.py offbook-packet `
+python scripts/review/agent_offbook_review.py offbook-packet `
   --bundle "C:\path\leader-bundle.json" `
   --account "leader_id" `
   --mode reference `
@@ -173,7 +176,7 @@ Agent 阅读审查包后手写标记文件；每局必须明确记录 `offbook` 
 ```json
 {
   "schema": "player-offbook-agent-marks-input-v1",
-  "account": "Z779",
+  "account": "sample_player",
   "mode": "target",
   "reviewedBy": "agent",
   "sourcePacketSha256": "可选，但建议填写审查包 SHA-256",
@@ -197,10 +200,10 @@ Agent 阅读审查包后手写标记文件；每局必须明确记录 `offbook` 
 登记命令：
 
 ```powershell
-python agent_offbook_review.py offbook-record `
-  --packet "C:\path\z779-offbook-packet.json" `
-  --marks "C:\path\z779-agent-marks.json" `
-  --output "C:\path\z779-offbook-records.json"
+python scripts/review/agent_offbook_review.py offbook-record `
+  --packet "C:\path\sample_player-offbook-packet.json" `
+  --marks "C:\path\sample_player-agent-marks.json" `
+  --output "C:\path\sample_player-offbook-records.json"
 ```
 
 登记阶段强制检查标记属于目标选手本人：执白只能标白方着手，执黑只能标黑方
@@ -213,10 +216,10 @@ python agent_offbook_review.py offbook-record `
 ```json
 {
   "target": {
-    "name": "Z779",
-    "account": "Z779",
-    "marks": "C:\\path\\z779-offbook-records.json",
-    "engineDirectory": "C:\\path\\z779-existing-eg-json"
+    "name": "sample_player",
+    "account": "sample_player",
+    "marks": "C:\\path\\sample_player-offbook-records.json",
+    "engineDirectory": "C:\\path\\sample_player-existing-eg-json"
   },
   "references": [
     {
@@ -234,11 +237,145 @@ python agent_offbook_review.py offbook-record `
 }
 ```
 
+如果只统计某个已校验记录文件中的指定对局，可在对应 target 或 reference
+member 中加入 `"gameIds": ["game_1", "game_2"]`。脚本会拒绝空数组、重复
+gameId 或不属于该人工记录文件的 gameId。输出的 `postOffBookInclusive.loss.games`
+会为每盘同时保留 `offBookPly`、`postOffBookStartsAtPly` 和
+`excludedPreOffBookMoveCount`，明确证明该统计已经排除锚点之前的目标选手着手。
+
+已经有合并人工记录文件时，reference group 可用
+`membersFromConsolidated` 自动展开成员，避免手工重复列出每个账号：
+
+```json
+{
+  "name": "diagonal-reference",
+  "membersFromConsolidated": {
+    "path": "C:\\path\\40-offbook-records-consolidated.json",
+    "opening": "Diagonal Opening",
+    "engineDirectory": "C:\\path\\diagonal-eg-json"
+  }
+}
+```
+
+`membersFromConsolidated` 也可为对象数组，用于把多个开局及各自 EG 目录合并成
+一个参照组。脚本只接受合并文件中已经关联到原始已校验记录文件的记录。
+
+比较输出同时给出整局和脱谱后差值。如果 target 只包含一盘，脚本还会分别在
+`individualFullGameEmpiricalPosition` 和
+`individualPostOffBookEmpiricalPosition` 中列出该盘相对参照逐局平均子损的
+小于、等于、含等号经验位置及参照范围。
+
 ```powershell
-python agent_offbook_review.py offbook-stats `
+python scripts/review/agent_offbook_review.py offbook-stats `
   --config "C:\path\offbook-stats-config.json" `
   --output "C:\path\offbook-stats.json"
 ```
+
+同一目标账号的被报告局与个人对照还可以在人工锚点切分后重新计算差值、整局
+聚类 bootstrap、精确组合位置和两部分模型：
+
+```json
+{
+  "dataset": {
+    "account": "sample_player",
+    "marks": "C:\\path\\sample_player-offbook-records.json",
+    "engineDirectory": "C:\\path\\sample_player-existing-eg-json",
+    "gameIds": ["reported_1", "reported_2", "control_1", "control_2"]
+  },
+  "reportedGameIds": ["reported_1", "reported_2"],
+  "bootstrap": 10000,
+  "modelBootstrap": 1000,
+  "seed": 20260801
+}
+```
+
+```powershell
+python scripts/review/agent_offbook_review.py offbook-model `
+  --config "C:\path\offbook-model-config.json" `
+  --output "C:\path\offbook-model.json"
+```
+
+输出的 `fullGame` 与 `postOffBookInclusive` 使用完全相同的比较和模型字段；后一
+单元只读取各盘人工锚点及其后的目标选手着手，并包含锚点手本身。
+
+`offbook-model` 还在不改变以上两个旧单元的前提下新增固定四阶段输出。配置仍
+使用上例的 `bootstrap` 和 `seed`；阶段 bootstrap 使用 `seed + 200`，无需也不
+允许从当前样本配置或重新估计边界/权重：
+
+```text
+postOffBookByPhase
+  phaseDefinitions
+  bootstrapPolicy
+  ply1To30
+  ply31To47
+  ply48To53
+  ply54To60
+postOffBookPhaseCombined
+  primaryWeightScheme
+  combinationOrder
+  missingPhasePolicy
+  weightSchemes
+    referenceHumanExposure
+    equalPhase
+  weightSources
+  coverageDiagnostics
+plyCoordinateAudit
+```
+
+固定闭区间为 `1–30 / 31–47 / 48–53 / 54–60`，等价半开区间为
+`[1,31) / [31,48) / [48,54) / [54,61)`。每局先执行人工脱谱硬切分，再按全局
+实际落子 ply 放入阶段；例如 `offBookPly=35` 的对局不会给前一阶段或 ply 31–34
+提供节点。每个阶段的 `reported` 和 `control` 分别给出原组局数、目标节点数、
+有效子损节点数、实际贡献局数/独立局数，以及局等权平均子损、着手等权平均
+子损、零子损率、正子损平均值、子损≥4比例和子损≥10比例。两项阈值还分别
+给出节点数；`reportedMinusControl` 为六项
+举报组减对照组点估计及整局聚类区间。`targetNodeCount` 包括该阶段所有目标
+选手实际落子节点，`lossNodeCount` 只包括具有 `lossClipped` 的统计节点。子损
+统一定义为 `disc_loss = max(0, raw_loss)`；两个阈值都使用包含边界的 `>=`。
+≥4 保持主要敏感指标，紧邻的 ≥10 表示更稀少的“大失误”指标；≥10 区间即使
+更宽，也不因此获得更强的证据权重。
+
+每次阶段 bootstrap 在举报组和对照组内分别抽取与原组相同数量的整局。同一
+次抽到的两组对局名单同时供四阶段、≥4、≥10 和全部其他指标使用；一局跨阶段时仍只有一个
+聚类身份。阶段合成也在该次重复内部先完成，再对合成重复值取 2.5% 和 97.5%
+分位，绝不平均四个阶段区间端点。
+
+合成结果同时输出两种预先固定的命名口径：
+
+- 主口径 `referenceHumanExposure`：来自归档独立人类参考样本
+  `investigations/oq_loss_phase_boundaries_20260803/ply_statistics_postbook.csv`
+  的有效子损节点数 `48631 / 51032 / 18040 / 17921`，总计 `135624`；固定权重
+  约为 `0.358572229104 / 0.376275585442 / 0.133014805639 /
+  0.132137379815`。
+- 敏感性口径 `equalPhase`：四阶段各 `0.25`，强调阶段同等重要，因此会相对
+  提高两个较短尾盘阶段的影响。
+
+权重不从当前举报/对照样本估计，也不会因某次重复缺阶段而重新归一化。某阶段
+在任一组完全无数据时，对应点估计/阶段结果允许为带原因的 `null`；某次重复
+缺少某固定阶段或某指标时，该指标的合成重复记为失败，不重抽。只有成功率至少
+达到固定的 `0.95` 才发布该项 95% 区间，否则区间为带 `nullReason` 的 `null`。
+成功/失败次数和阶段覆盖在输出中显式保留。
+
+`plyCoordinateAudit` 强制检查 EG `ply` 是范围 1–60 的、剔除显式 pass 后的全局
+实际落子序号；人工 `offBookPly` 必须恰好对应目标选手 EG 节点。pass 只会造成
+`sourceMoveIndex` 跳号，不占用 `ply`。不符合该语义、非坐标节点或超过 60 的
+输入会明确失败，不做静默转换。
+
+边界 `30|47|53` 是用户选择的固定细分方案，用于提高解释区分度，不是稳定识别
+出的普适自然边界。归档调查中它相对三阶段的样本内拟合改善 28.3%，但完整
+bootstrap 复现率只有 38.4%，后两个边界还会随最小阶段宽度改变；不得在每份
+数据或每次重复中重估。ply 31/32 附近还存在 Egaroucid 搜索制度变化，阶段差异
+不能全部解释为人类行为的自然转折。
+
+阶段测试可复现运行：
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+当被报告对局分别属于不同开局或其他不同层时，可用 `offbook-stratified` 从每个
+参照层各取一盘，枚举笛卡尔积组合。输出同样同时包含整局和脱谱后组合位置，
+避免把不同层的任意同层组合混入对照。
 
 结果同时保留整局和 `postOffBookInclusive` 单元。脱谱后单元从 Agent 标记的
 目标选手着手开始，包含该手，计算局等权/着手等权子损和原始毫秒 mean 用时，
@@ -248,7 +385,7 @@ python agent_offbook_review.py offbook-stats `
 ## 6. 子损分析
 
 ```powershell
-python player_analysis.py loss `
+python scripts/analysis/player_analysis.py loss `
   --engine-dir "C:\path\ega-analysis" `
   --account "player_id" `
   --reported-game-id "reported_game_1" `
@@ -259,12 +396,25 @@ python player_analysis.py loss `
 ```
 
 脚本读取既有 EG `game_*.json`，不会重跑引擎。结果包含按局、按着手、整局
-聚类 bootstrap、精确组合位置和单步两部分模型。
+聚类 bootstrap、精确组合位置和单步两部分模型。每局、举报组、对照组、差值和
+脱谱后输出都将 `lossAtLeast10Count` / `lossAtLeast10Rate` 放在原有
+`lossAtLeast4Count` / `lossAtLeast4Rate` 旁边；≥4 与 ≥10 的区间复用同一次
+整局抽样。
+
+节点可选携带 `probability_loss_ge4` 和 `probability_loss_ge10`。只有对应阈值的
+每个有效子损节点都有合法 `[0,1]` 概率时，JSON/报告才输出预计节点数、实际减
+预计节点数，以及按节点或整局归一的实际发生减预测概率；否则明确输出
+“模型概率不可用”，不会用 0、空字符串或虚构值代替。
+
+阶段调查脚本的诊断图默认同时包含 `loss_ge4_rate` 与 `loss_ge10_rate`，也可
+重复使用 `--plot-metric loss_ge4_rate --plot-metric loss_ge10_rate` 选择要绘制
+的指标。该选项只控制图中展示；固定输出统计仍同时保留两个阈值，边界拟合特征
+继续沿用归档方案，不因新增 ≥10 描述指标而改变。
 
 ## 7. 用时趋势
 
 ```powershell
-python player_analysis.py time `
+python scripts/analysis/player_analysis.py time `
   --engine-dir "C:\path\ega-analysis" `
   --account "player_id" `
   --reported-game-id "reported_game_1" `
@@ -301,7 +451,7 @@ python player_analysis.py time `
 运行：
 
 ```powershell
-python player_analysis.py reference --config reference-config.json --output reference-analysis.json
+python scripts/analysis/player_analysis.py reference --config reference-config.json --output reference-analysis.json
 ```
 
 ## 9. 一次运行主要分析
@@ -324,7 +474,7 @@ python player_analysis.py reference --config reference-config.json --output refe
 ```
 
 ```powershell
-python player_analysis.py run-all --config run-config.json
+python scripts/analysis/player_analysis.py run-all --config run-config.json
 ```
 
 `referenceConfig` 可以省略。
@@ -332,12 +482,12 @@ python player_analysis.py run-all --config run-config.json
 ## 10. 生成 GitHub 风格 PDF
 
 ```powershell
-python render_github_pdf.py `
+python scripts/reporting/render_github_pdf.py `
   --markdown "C:\path\report.md" `
   --pdf "C:\path\report-github.pdf" `
   --title "对局调查报告" `
   --subtitle "Othello Quest 对局分析" `
-  --reporter "裁判（使用 AI 协助）" `
+  --reporter "瑞瑞（使用 AI 协助）" `
   --role "无差别网赛裁判" `
   --report-date "2026年8月2日"
 ```
@@ -362,10 +512,10 @@ python render_github_pdf.py `
 
 该流程只读取已有 OQ bundle、EG 汇总/单局 JSON、人工脱谱模型和高分参照统计，
 不会抓取网络数据或重跑引擎。OQ 公开对局需要更新时，先复用
-`oq_account_bundle.py` 生成新的 account bundle，再把该文件写入配置。
+`scripts/data/oq_account_bundle.py` 生成新的 account bundle，再把该文件写入配置。
 
 ```powershell
-python generate_review_checklist.py --config "C:\path\checklist-config.json"
+python scripts/review/generate_review_checklist.py --config "C:\path\checklist-config.json"
 ```
 
 配置示例：
@@ -397,7 +547,7 @@ python generate_review_checklist.py --config "C:\path\checklist-config.json"
 也不计算“最常用开局”。原图不会被修改。
 
 `engineSummary` 所在目录必须保留对应的 `game_*.json`。脚本复用这些已有 EG
-单局结果和 `analysis_core.py` 的既有用时基线函数，生成举报局逐局用时以及举报局
+单局结果和 `src/player_analysis_toolkit/analysis_core.py` 的既有用时基线函数，生成举报局逐局用时以及举报局
 组合与同色个人非举报对照的汇总对比。相对基线平均残差使用同色非举报局拟合的
 固定四节点三次回归样条；长考阈值为相同 ply 对照用时的第 90 百分位。脚本不
 重跑 EG 引擎。

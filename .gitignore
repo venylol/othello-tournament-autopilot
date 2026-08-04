@@ -53,6 +53,12 @@ tournament-metadata/exports/
 tournament-metadata/no-handicap/
 player_analysis_toolkit/investigations/
 player_analysis_toolkit/__pycache__/
+player_analysis_toolkit/tmp/
+player_analysis_toolkit/private_archive/
+player_analysis_toolkit/research/server_handoffs/
+player_analysis_toolkit/research/tcn_loss_model/checkpoints/
+player_analysis_toolkit/research/tcn_loss_model/data/
+player_analysis_toolkit/research/tcn_loss_model/outputs/
 
 # Local databases and transient files
 *.db
