@@ -53,8 +53,9 @@ $resolvedItems = foreach ($item in $manifest.items) {
 
 $auditRows = foreach ($item in $resolvedItems) {
     $sourceItem = Get-Item -LiteralPath $item.Source -Force
+    $enumerationErrors = @()
     $files = if ($sourceItem.PSIsContainer) {
-        @(Get-ChildItem -LiteralPath $item.Source -Recurse -Force -File)
+        @(Get-ChildItem -LiteralPath $item.Source -Recurse -Force -File -ErrorAction SilentlyContinue -ErrorVariable +enumerationErrors)
     } else {
         @($sourceItem)
     }
@@ -63,6 +64,7 @@ $auditRows = foreach ($item in $resolvedItems) {
         type = if ($sourceItem.PSIsContainer) { 'directory' } else { 'file' }
         files = $files.Count
         bytes = [long](($files | Measure-Object Length -Sum).Sum)
+        enumerationWarnings = $enumerationErrors.Count
     }
 }
 
