@@ -1,4 +1,4 @@
-"""Retained thinking-time head plus one time-conditioned four-class severity head."""
+"""Thinking-time, four-class severity, and three-class WLD multitask model."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from .backbone import BoardConditionedBackbone, ModelConfig
 from .oq_profile_features import OQ_PROFILE_FEATURE_NAMES, profile_ablation_indices
 
 SEVERITY_CLASS_NAMES = ("class_zero", "class_1_3", "class_4_9", "class_ge10")
+WLD_CLASS_NAMES = ("class_no_wld_loss", "class_half_wld_loss", "class_full_wld_loss")
 
 
 @dataclass
@@ -24,6 +25,10 @@ class ModelOutput:
     probability_loss_positive: torch.Tensor
     probability_loss_ge4: torch.Tensor
     probability_loss_ge10: torch.Tensor
+    wld_logits: torch.Tensor
+    wld_probabilities: torch.Tensor
+    probability_wld_any: torch.Tensor
+    expected_wld_loss: torch.Tensor
 
 
 class TimeConditionedLossModel(nn.Module):
@@ -35,6 +40,24 @@ class TimeConditionedLossModel(nn.Module):
             nn.Linear(cfg.channels + 2, hidden), nn.GELU(), nn.Dropout(cfg.dropout)
         )
         self.severity_head = nn.Linear(hidden, len(SEVERITY_CLASS_NAMES))
+        self.wld_head = nn.Linear(hidden, len(WLD_CLASS_NAMES))
+
+    def output_from_hidden(self, time_pred: torch.Tensor, hidden: torch.Tensor) -> ModelOutput:
+        severity_logits = self.severity_head(hidden)
+        severity_probabilities = torch.softmax(severity_logits, dim=-1)
+        wld_logits = self.wld_head(hidden)
+        wld_probabilities = torch.softmax(wld_logits, dim=-1)
+        probability_zero = severity_probabilities[..., 0]
+        probability_positive = 1.0 - probability_zero
+        probability_ge4 = severity_probabilities[..., 2] + severity_probabilities[..., 3]
+        probability_ge10 = severity_probabilities[..., 3]
+        probability_wld_any = wld_probabilities[..., 1] + wld_probabilities[..., 2]
+        expected_wld_loss = 0.5 * wld_probabilities[..., 1] + wld_probabilities[..., 2]
+        return ModelOutput(
+            time_pred, hidden, severity_logits, severity_probabilities,
+            probability_zero, probability_positive, probability_ge4, probability_ge10,
+            wld_logits, wld_probabilities, probability_wld_any, expected_wld_loss,
+        )
 
     @staticmethod
     def actual_time_features(actual_thinking_time_ms: torch.Tensor) -> torch.Tensor:
@@ -57,16 +80,7 @@ class TimeConditionedLossModel(nn.Module):
         severity_hidden = self.severity_context(
             torch.cat((latent, self.actual_time_features(actual_thinking_time_ms)), dim=-1)
         )
-        logits = self.severity_head(severity_hidden)
-        probabilities = torch.softmax(logits, dim=-1)
-        probability_zero = probabilities[..., 0]
-        probability_positive = 1.0 - probability_zero
-        probability_ge4 = probabilities[..., 2] + probabilities[..., 3]
-        probability_ge10 = probabilities[..., 3]
-        return ModelOutput(
-            time_pred, severity_hidden, logits, probabilities, probability_zero, probability_positive,
-            probability_ge4, probability_ge10,
-        )
+        return self.output_from_hidden(time_pred, severity_hidden)
 
 
 class ProfileConditionedLossModel(TimeConditionedLossModel):
@@ -119,23 +133,18 @@ class ProfileConditionedLossModel(TimeConditionedLossModel):
         profile_embedding = self.profile_encoder(torch.cat((selected_features, selected_missing), dim=-1))
         gamma, beta = self.profile_severity_film(profile_embedding).chunk(2, dim=-1)
         conditioned_hidden = severity_hidden * (1.0 + gamma) + beta
-        logits = self.severity_head(conditioned_hidden)
-        probabilities = torch.softmax(logits, dim=-1)
-        probability_zero = probabilities[..., 0]
-        probability_positive = 1.0 - probability_zero
-        probability_ge4 = probabilities[..., 2] + probabilities[..., 3]
-        probability_ge10 = probabilities[..., 3]
-        return ModelOutput(
-            time_pred, conditioned_hidden, logits, probabilities,
-            probability_zero, probability_positive, probability_ge4, probability_ge10,
-        )
+        return self.output_from_hidden(time_pred, conditioned_hidden)
 
 
 def multitask_loss(output: ModelOutput, actual_time_ms: torch.Tensor,
                    severity_class: torch.Tensor, mask: torch.Tensor,
                    time_weight: float = 0.25,
                    severity_weight: float = 1.0,
-                   class_weights: tuple[float, float, float, float] | list[float] = (1, 1, 1, 1)) -> dict[str, torch.Tensor]:
+                   class_weights: tuple[float, float, float, float] | list[float] = (1, 1, 1, 1),
+                   wld_class: torch.Tensor | None = None,
+                   wld_label_available: torch.Tensor | None = None,
+                   global_placement_ply: torch.Tensor | None = None,
+                   wld_weight: float = 1.0) -> dict[str, torch.Tensor]:
     valid = mask.bool() & torch.isfinite(severity_class) & torch.isfinite(actual_time_ms)
     if not bool(valid.any()):
         raise ValueError("batch has no valid supervised nodes")
@@ -148,5 +157,21 @@ def multitask_loss(output: ModelOutput, actual_time_ms: torch.Tensor,
     time_target = torch.log1p(actual_time_ms[valid].clamp_min(0) / 1000.0)
     time_loss = F.mse_loss(output.pred_time_log_seconds[valid], time_target)
     severity_loss = F.cross_entropy(output.severity_logits[valid], target_class, weight=weights)
-    total = time_weight * time_loss + severity_weight * severity_loss
-    return {"total": total, "thinking_time": time_loss, "severity_classification": severity_loss}
+    wld_loss = output.wld_logits.sum() * 0.0
+    if wld_class is not None or wld_label_available is not None or global_placement_ply is not None:
+        if wld_class is None or wld_label_available is None or global_placement_ply is None:
+            raise ValueError("WLD supervision requires class, availability, and global placement ply together")
+        wld_valid = (
+            mask.bool() & wld_label_available.bool() & torch.isfinite(wld_class)
+            & (global_placement_ply >= 39)
+        )
+        if bool(wld_valid.any()):
+            wld_target = wld_class[wld_valid].long()
+            if bool(((wld_target < 0) | (wld_target > 2)).any()):
+                raise ValueError("WLD class must be in 0..2")
+            wld_loss = F.cross_entropy(output.wld_logits[wld_valid], wld_target)
+    total = time_weight * time_loss + severity_weight * severity_loss + wld_weight * wld_loss
+    return {
+        "total": total, "thinking_time": time_loss,
+        "severity_classification": severity_loss, "wld_classification": wld_loss,
+    }

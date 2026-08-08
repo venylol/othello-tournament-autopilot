@@ -17,6 +17,9 @@ LOSS_PROBABILITY_FIELDS = {
     4: "probability_loss_ge4",
     10: "probability_loss_ge10",
 }
+SUPPORTED_WLD_FROM_PLY = 39
+ENGINE_WLD_TOTAL_FIELD = "engine_wld_loss_total_from_ply39"
+PREDICTED_WLD_TOTAL_FIELD = "predicted_expected_wld_loss_total_from_ply39"
 
 MOVE_RE = re.compile(r"^[a-h][1-8]$", re.IGNORECASE)
 MOVE_SEPARATOR_RE = re.compile(r"[\s,;:/_-]+")
@@ -76,6 +79,81 @@ def quantile(values: Iterable[float], q: float) -> float | None:
 
 def rounded(value: float | None, digits: int = 6) -> float | None:
     return None if value is None else round(float(value), digits)
+
+
+def validate_wld_from_ply(wld_from_ply: int | None) -> int | None:
+    if wld_from_ply is None:
+        return None
+    if isinstance(wld_from_ply, bool) or int(wld_from_ply) != SUPPORTED_WLD_FROM_PLY:
+        raise ValueError(
+            f"wld_from_ply must be {SUPPORTED_WLD_FROM_PLY} because the public total field is fixed to ply 39"
+        )
+    return SUPPORTED_WLD_FROM_PLY
+
+
+def wld_rank(score: float | int) -> int:
+    value = float(score)
+    if not math.isfinite(value):
+        raise ValueError("WLD score must be finite")
+    if value > 0:
+        return 2
+    if value < 0:
+        return 0
+    return 1
+
+
+def actual_move_score_from_next_best(
+    next_best_score: float | int,
+    same_side_after_pass: bool,
+) -> float:
+    value = float(next_best_score)
+    if not math.isfinite(value):
+        raise ValueError("next_best_score must be finite")
+    return value if same_side_after_pass else -value
+
+
+def wld_loss_from_scores(before_score: float | int, actual_move_score: float | int) -> float:
+    drop = max(0, wld_rank(before_score) - wld_rank(actual_move_score))
+    return drop / 2.0
+
+
+def engine_node_wld_loss(node: dict[str, Any]) -> float:
+    before_score = node.get("bestEval", node.get("hint6_1_score"))
+    if before_score is None:
+        raise ValueError("WLD-enabled engine node is missing bestEval/current best score")
+    actual_score = node.get("actualEval")
+    if actual_score is None:
+        next_best_score = node.get("next_best_score")
+        if next_best_score is None or "same_side_after_move" not in node:
+            raise ValueError(
+                "WLD-enabled engine node must provide actualEval or next_best_score plus same_side_after_move"
+            )
+        actual_score = actual_move_score_from_next_best(
+            next_best_score,
+            bool(node["same_side_after_move"]),
+        )
+    return wld_loss_from_scores(before_score, actual_score)
+
+
+def node_global_placement_ply(node: dict[str, Any]) -> int:
+    raw = node.get("global_placement_ply", node.get("ply"))
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not float(raw).is_integer():
+        raise ValueError("WLD-enabled node is missing an integer pass-free global placement ply")
+    ply = int(raw)
+    if not 1 <= ply <= 60:
+        raise ValueError(f"global placement ply must be in [1, 60], got {ply}")
+    return ply
+
+
+def engine_wld_loss_total(games: list[dict[str, Any]], wld_from_ply: int) -> float:
+    boundary = validate_wld_from_ply(wld_from_ply)
+    assert boundary is not None
+    total = 0.0
+    for game in games:
+        for node in game.get("nodes", []):
+            if node_global_placement_ply(node) >= boundary:
+                total += engine_node_wld_loss(node)
+    return rounded(total) or 0.0
 
 
 class OthelloBoard:
@@ -656,6 +734,171 @@ def target_engine_games(games: list[dict[str, Any]], account: str) -> list[dict[
     return output
 
 
+def engine_wld_totals_by_game_player(
+    games: list[dict[str, Any]], wld_from_ply: int
+) -> dict[str, Any]:
+    boundary = validate_wld_from_ply(wld_from_ply)
+    assert boundary is not None
+    game_totals: dict[tuple[str, str, str], float] = defaultdict(float)
+    player_totals: dict[tuple[str, str], float] = defaultdict(float)
+    for game in games:
+        game_id = str(game.get("gameId") or "").strip()
+        if not game_id:
+            raise ValueError("WLD-enabled engine analysis contains an empty gameId")
+        for node in game.get("nodes", []):
+            player_id = str(node.get("playerAccount") or "").strip()
+            side = str(node.get("playerColor") or "").strip()
+            if not player_id and not side:
+                raise ValueError(
+                    f"WLD-enabled engine node in game {game_id!r} has neither playerAccount nor playerColor"
+                )
+            game_key = (game_id, player_id, side)
+            player_key = (player_id, side if not player_id else "")
+            game_totals[game_key] += 0.0
+            player_totals[player_key] += 0.0
+            if node_global_placement_ply(node) < boundary:
+                continue
+            value = engine_node_wld_loss(node)
+            game_totals[game_key] += value
+            player_totals[player_key] += value
+    game_rows = [
+        {
+            "game_id": game_id,
+            "player_id": player_id or None,
+            "side": side or None,
+            ENGINE_WLD_TOTAL_FIELD: rounded(total) or 0.0,
+        }
+        for (game_id, player_id, side), total in sorted(game_totals.items())
+    ]
+    player_rows = [
+        {
+            "player_id": player_id or None,
+            "side": side or None,
+            ENGINE_WLD_TOTAL_FIELD: rounded(total) or 0.0,
+        }
+        for (player_id, side), total in sorted(player_totals.items())
+    ]
+    return {
+        "schema": "player-engine-wld-loss-totals-v1",
+        "wldFromPly": boundary,
+        "globalPlacementPlyPolicy": "pass-free actual placement ply; boundary is inclusive",
+        "gamePlayerTotals": game_rows,
+        "playerTotals": player_rows,
+    }
+
+
+def read_prediction_rows(path: str | Path) -> list[dict[str, Any]]:
+    source = Path(path)
+    if source.suffix.casefold() == ".csv":
+        with source.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = [dict(row) for row in reader]
+            fieldnames = set(reader.fieldnames or [])
+    elif source.suffix.casefold() == ".json":
+        value = read_json(source)
+        raw_rows = value.get("predictions") if isinstance(value, dict) else value
+        if not isinstance(raw_rows, list) or any(not isinstance(row, dict) for row in raw_rows):
+            raise ValueError("prediction JSON must be an array or an object with a predictions array")
+        rows = [dict(row) for row in raw_rows]
+        fieldnames = {key for row in rows for key in row}
+    else:
+        raise ValueError("model prediction input must be UTF-8 CSV or JSON")
+    required = {"expected_wld_loss", "wld_applicable", "global_placement_ply", "game_id"}
+    missing = sorted(required - fieldnames)
+    if missing:
+        raise ValueError(f"WLD-enabled model prediction input is missing required fields: {missing}")
+    if not ({"player_id", "side"} & fieldnames):
+        raise ValueError(
+            "WLD-enabled model prediction input requires player_id or side to identify the mover"
+        )
+    return rows
+
+
+def parse_prediction_bool(value: Any, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"true", "1"}:
+        return True
+    if text in {"false", "0"}:
+        return False
+    raise ValueError(f"{field} must be true/false or 1/0")
+
+
+def predicted_wld_totals_by_game_player(
+    rows: list[dict[str, Any]], wld_from_ply: int
+) -> dict[str, Any]:
+    boundary = validate_wld_from_ply(wld_from_ply)
+    assert boundary is not None
+    required = {"expected_wld_loss", "wld_applicable", "global_placement_ply", "game_id"}
+    game_totals: dict[tuple[str, str, str], float] = defaultdict(float)
+    player_totals: dict[tuple[str, str], float] = defaultdict(float)
+    for index, row in enumerate(rows, start=1):
+        missing = sorted(field for field in required if field not in row)
+        if missing:
+            raise ValueError(f"model prediction row {index} is missing required fields: {missing}")
+        game_id = str(row.get("game_id") or "").strip()
+        player_id = str(row.get("player_id") or "").strip()
+        side = str(row.get("side") or "").strip()
+        if not game_id:
+            raise ValueError(f"model prediction row {index} has an empty game_id")
+        if not player_id and not side:
+            raise ValueError(f"model prediction row {index} has neither player_id nor side")
+        try:
+            ply_value = float(row["global_placement_ply"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"model prediction row {index} global_placement_ply must be an integer"
+            ) from exc
+        if not math.isfinite(ply_value) or not ply_value.is_integer() or not 1 <= ply_value <= 60:
+            raise ValueError(
+                f"model prediction row {index} global_placement_ply must be an integer in [1, 60]"
+            )
+        applicable = parse_prediction_bool(row["wld_applicable"], "wld_applicable")
+        game_key = (game_id, player_id, side)
+        player_key = (player_id, side if not player_id else "")
+        game_totals[game_key] += 0.0
+        player_totals[player_key] += 0.0
+        if int(ply_value) < boundary or not applicable:
+            continue
+        try:
+            expected = float(row["expected_wld_loss"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"model prediction row {index} expected_wld_loss must be numeric when wld_applicable is true"
+            ) from exc
+        if not math.isfinite(expected) or not 0.0 <= expected <= 1.0:
+            raise ValueError(
+                f"model prediction row {index} expected_wld_loss must be finite and in [0, 1]"
+            )
+        game_totals[game_key] += expected
+        player_totals[player_key] += expected
+    game_rows = [
+        {
+            "game_id": game_id,
+            "player_id": player_id or None,
+            "side": side or None,
+            PREDICTED_WLD_TOTAL_FIELD: rounded(total) or 0.0,
+        }
+        for (game_id, player_id, side), total in sorted(game_totals.items())
+    ]
+    player_rows = [
+        {
+            "player_id": player_id or None,
+            "side": side or None,
+            PREDICTED_WLD_TOTAL_FIELD: rounded(total) or 0.0,
+        }
+        for (player_id, side), total in sorted(player_totals.items())
+    ]
+    return {
+        "schema": "player-model-expected-wld-loss-totals-v1",
+        "wldFromPly": boundary,
+        "globalPlacementPlyPolicy": "pass-free actual placement ply; boundary is inclusive",
+        "gamePlayerTotals": game_rows,
+        "playerTotals": player_rows,
+    }
+
+
 def disc_loss(raw_loss: float | int) -> float:
     """Return the shared non-negative disc-loss definition."""
     return max(0.0, float(raw_loss))
@@ -733,10 +976,12 @@ def model_probability_summary(
     }
 
 
-def loss_game_summary(game: dict[str, Any]) -> dict[str, Any]:
+def loss_game_summary(
+    game: dict[str, Any], wld_from_ply: int | None = None
+) -> dict[str, Any]:
     losses = node_losses(game)
     positives = [value for value in losses if value > 0]
-    return {
+    summary = {
         "gameId": game["gameId"],
         "round": game.get("round"),
         "color": game.get("color"),
@@ -756,13 +1001,20 @@ def loss_game_summary(game: dict[str, Any]) -> dict[str, Any]:
             "lossGe10": model_probability_summary([game], 10),
         },
     }
+    boundary = validate_wld_from_ply(wld_from_ply)
+    if boundary is not None:
+        summary[ENGINE_WLD_TOTAL_FIELD] = engine_wld_loss_total([game], boundary)
+    return summary
 
 
-def aggregate_loss_games(games: list[dict[str, Any]]) -> dict[str, Any]:
-    summaries = [loss_game_summary(game) for game in games]
+def aggregate_loss_games(
+    games: list[dict[str, Any]], wld_from_ply: int | None = None
+) -> dict[str, Any]:
+    boundary = validate_wld_from_ply(wld_from_ply)
+    summaries = [loss_game_summary(game, boundary) for game in games]
     losses = [value for game in games for value in node_losses(game)]
     positives = [value for value in losses if value > 0]
-    return {
+    aggregate = {
         "gameCount": len(games),
         "moveCount": len(losses),
         "gameWeightedMeanLoss": rounded(mean(item["meanLoss"] for item in summaries if item["meanLoss"] is not None)),
@@ -779,6 +1031,9 @@ def aggregate_loss_games(games: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "games": summaries,
     }
+    if boundary is not None:
+        aggregate[ENGINE_WLD_TOTAL_FIELD] = engine_wld_loss_total(games, boundary)
+    return aggregate
 
 
 def cluster_bootstrap_threshold_rate_differences(
@@ -833,15 +1088,56 @@ def cluster_bootstrap_difference(
     return [rounded(quantile(values, 0.025)), rounded(quantile(values, 0.975))]
 
 
+def cluster_bootstrap_engine_wld_per_game_difference(
+    reported: list[dict[str, Any]],
+    control: list[dict[str, Any]],
+    repetitions: int,
+    seed: int,
+    wld_from_ply: int,
+) -> list[float | None]:
+    """Whole-game bootstrap for mean engine WLD loss per game."""
+    reported_values = [engine_wld_loss_total([game], wld_from_ply) for game in reported]
+    control_values = [engine_wld_loss_total([game], wld_from_ply) for game in control]
+    rng = random.Random(seed)
+    values = [
+        statistics.fmean(rng.choice(reported_values) for _ in reported_values)
+        - statistics.fmean(rng.choice(control_values) for _ in control_values)
+        for _ in range(repetitions)
+    ]
+    return [rounded(quantile(values, 0.025)), rounded(quantile(values, 0.975))]
+
+
+def cluster_bootstrap_zero_loss_rate_difference(
+    reported: list[dict[str, Any]], control: list[dict[str, Any]], repetitions: int, seed: int
+) -> list[float | None]:
+    """Whole-game bootstrap for the move-weighted zero-disc-loss rate difference."""
+    rng = random.Random(seed)
+    values = []
+    for _ in range(repetitions):
+        left = [reported[rng.randrange(len(reported))] for _ in reported]
+        right = [control[rng.randrange(len(control))] for _ in control]
+        left_losses = [value for game in left for value in node_losses(game)]
+        right_losses = [value for game in right for value in node_losses(game)]
+        values.append(
+            sum(value == 0 for value in left_losses) / len(left_losses)
+            - sum(value == 0 for value in right_losses) / len(right_losses)
+        )
+    return [rounded(quantile(values, 0.025)), rounded(quantile(values, 0.975))]
+
+
 def exact_combination_position(universe: list[dict[str, Any]], selected_ids: set[str]) -> dict[str, Any]:
     count = len(selected_ids)
     total = math.comb(len(universe), count)
-    if total > 200_000:
+    if total > 5_000_000:
         raise ValueError(f"exact combination count {total} is too large")
-    selected_mean = mean(loss_game_summary(game)["meanLoss"] for game in universe if game["gameId"] in selected_ids)
+    game_ids = [game["gameId"] for game in universe]
+    game_means = [float(loss_game_summary(game)["meanLoss"]) for game in universe]
+    selected_mean = statistics.fmean(
+        value for game_id, value in zip(game_ids, game_means, strict=True) if game_id in selected_ids
+    )
     values = [
-        mean(loss_game_summary(game)["meanLoss"] for game in combo)
-        for combo in combinations(universe, count)
+        statistics.fmean(combo)
+        for combo in combinations(game_means, count)
     ]
     lower = sum(value <= selected_mean + 1e-12 for value in values)
     upper = sum(value >= selected_mean - 1e-12 for value in values)
@@ -860,25 +1156,40 @@ def compare_loss_groups(
     universe: list[dict[str, Any]],
     repetitions: int,
     seed: int,
+    wld_from_ply: int | None = None,
 ) -> dict[str, Any]:
-    left = aggregate_loss_games(reported)
-    right = aggregate_loss_games(controls)
+    left = aggregate_loss_games(reported, wld_from_ply)
+    right = aggregate_loss_games(controls, wld_from_ply)
     threshold_intervals = cluster_bootstrap_threshold_rate_differences(
         reported, controls, repetitions, seed + 2
     )
-    return {
+    result = {
         "reported": left,
         "control": right,
         "gameWeightedDifference": rounded(left["gameWeightedMeanLoss"] - right["gameWeightedMeanLoss"]),
         "gameWeightedClusterBootstrap95CI": cluster_bootstrap_difference(reported, controls, repetitions, seed, False),
         "moveWeightedDifference": rounded(left["moveWeightedMeanLoss"] - right["moveWeightedMeanLoss"]),
         "moveWeightedClusterBootstrap95CI": cluster_bootstrap_difference(reported, controls, repetitions, seed + 1, True),
+        "zeroLossRateDifference": rounded(left["zeroLossRate"] - right["zeroLossRate"]),
+        "zeroLossRateClusterBootstrap95CI": cluster_bootstrap_zero_loss_rate_difference(
+            reported, controls, repetitions, seed + 4
+        ),
         "lossAtLeast4RateDifference": rounded(left["lossAtLeast4Rate"] - right["lossAtLeast4Rate"]),
         "lossAtLeast10RateDifference": rounded(left["lossAtLeast10Rate"] - right["lossAtLeast10Rate"]),
         "lossAtLeast4RateClusterBootstrap95CI": threshold_intervals[4],
         "lossAtLeast10RateClusterBootstrap95CI": threshold_intervals[10],
         "exactCombination": exact_combination_position(universe, {game["gameId"] for game in reported}),
     }
+    if wld_from_ply is not None:
+        left_mean_wld = float(left[ENGINE_WLD_TOTAL_FIELD]) / len(reported)
+        right_mean_wld = float(right[ENGINE_WLD_TOTAL_FIELD]) / len(controls)
+        result["engineWldLossPerGameDifference"] = rounded(left_mean_wld - right_mean_wld)
+        result["engineWldLossPerGameClusterBootstrap95CI"] = (
+            cluster_bootstrap_engine_wld_per_game_difference(
+                reported, controls, repetitions, seed + 3, wld_from_ply
+            )
+        )
+    return result
 
 
 def two_part_model(
@@ -981,7 +1292,9 @@ def loss_analysis(
     bootstrap_repetitions: int,
     model_bootstrap_repetitions: int,
     seed: int,
+    wld_from_ply: int | None = None,
 ) -> dict[str, Any]:
+    boundary = validate_wld_from_ply(wld_from_ply)
     games = target_engine_games(load_engine_games(engine_directory), account)
     by_id = {game["gameId"]: game for game in games}
     missing = sorted(reported_game_ids - set(by_id))
@@ -992,15 +1305,19 @@ def loss_analysis(
     colors = {game["color"] for game in reported}
     same_color_universe = [game for game in games if game["color"] in colors]
     same_color_controls = [game for game in same_color_universe if game["gameId"] not in reported_game_ids]
-    return {
+    result = {
         "schema": "player-loss-analysis-v1",
         "account": account,
         "reportedGameIds": sorted(reported_game_ids),
-        "reportedGames": [loss_game_summary(game) for game in reported],
-        "sameColorComparison": compare_loss_groups(reported, same_color_controls, same_color_universe, bootstrap_repetitions, seed),
-        "allGamesComparison": compare_loss_groups(reported, controls, games, bootstrap_repetitions, seed + 10),
+        "reportedGames": [loss_game_summary(game, boundary) for game in reported],
+        "sameColorComparison": compare_loss_groups(reported, same_color_controls, same_color_universe, bootstrap_repetitions, seed, boundary),
+        "allGamesComparison": compare_loss_groups(reported, controls, games, bootstrap_repetitions, seed + 10, boundary),
         "clusterAwareTwoPartModel": two_part_model(games, reported_game_ids, model_bootstrap_repetitions, seed + 20),
     }
+    if boundary is not None:
+        result["wldFromPly"] = boundary
+        result[ENGINE_WLD_TOTAL_FIELD] = engine_wld_loss_total(games, boundary)
+    return result
 
 
 def rankdata(values: list[float]) -> list[float]:
@@ -1147,8 +1464,10 @@ def time_analysis(engine_directory: str | Path, account: str, reported_game_ids:
     }
 
 
-def reference_group_stats(games: list[dict[str, Any]]) -> dict[str, Any]:
-    aggregate = aggregate_loss_games(games)
+def reference_group_stats(
+    games: list[dict[str, Any]], wld_from_ply: int | None = None
+) -> dict[str, Any]:
+    aggregate = aggregate_loss_games(games, wld_from_ply)
     phases: dict[str, dict[str, Any]] = {}
     for name, predicate in {
         "ply1to20": lambda ply: ply <= 20,
@@ -1166,7 +1485,12 @@ def reference_group_stats(games: list[dict[str, Any]]) -> dict[str, Any]:
     return aggregate
 
 
-def reference_analysis(config: dict[str, Any]) -> dict[str, Any]:
+def reference_analysis(
+    config: dict[str, Any], wld_from_ply: int | None = None
+) -> dict[str, Any]:
+    boundary = validate_wld_from_ply(
+        wld_from_ply if wld_from_ply is not None else config.get("wldFromPly")
+    )
     target_cfg = config["target"]
     target_games = target_engine_games(load_engine_games(target_cfg["engineDirectory"]), target_cfg["account"])
     target_ids = set(target_cfg.get("gameIds") or [])
@@ -1203,11 +1527,11 @@ def reference_analysis(config: dict[str, Any]) -> dict[str, Any]:
         if group_cfg.get("color"):
             selected = [game for game in selected if game["color"] == group_cfg["color"]]
         name = str(group_cfg["name"])
-        groups[name] = reference_group_stats(selected)
+        groups[name] = reference_group_stats(selected, boundary)
         pair_count = len(target_games)
         combinations_list = list(combinations(selected, pair_count))
-        target_mean = aggregate_loss_games(target_games)["gameWeightedMeanLoss"]
-        reference_means = [aggregate_loss_games(list(combo))["gameWeightedMeanLoss"] for combo in combinations_list]
+        target_mean = aggregate_loss_games(target_games, boundary)["gameWeightedMeanLoss"]
+        reference_means = [aggregate_loss_games(list(combo), boundary)["gameWeightedMeanLoss"] for combo in combinations_list]
         at_or_below = sum(value <= target_mean for value in reference_means)
         comparisons[name] = {
             "targetMinusReferenceGameWeightedMean": rounded(target_mean - groups[name]["gameWeightedMeanLoss"]),
@@ -1215,9 +1539,12 @@ def reference_analysis(config: dict[str, Any]) -> dict[str, Any]:
             "referenceCombinationsAtOrBelowTarget": at_or_below,
             "lowerTailPlusOneP": rounded((at_or_below + 1) / (len(reference_means) + 1)) if reference_means else None,
         }
-    return {
+    result = {
         "schema": "player-reference-comparison-v1",
-        "target": reference_group_stats(target_games),
+        "target": reference_group_stats(target_games, boundary),
         "groups": groups,
         "targetComparisons": comparisons,
     }
+    if boundary is not None:
+        result["wldFromPly"] = boundary
+    return result

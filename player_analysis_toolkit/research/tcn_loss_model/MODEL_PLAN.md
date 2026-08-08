@@ -8,8 +8,8 @@ The original thinking-time head remains unchanged. The loss head receives the TC
 latent state plus `log1p(actual_thinking_time_ms / 1000)` and a missing flag.
 Current actual time is never passed into the backbone or time head.
 
-The OQ profile experiment is an independent model schema,
-`time-plus-four-class-severity-oq-profile-v1`. The official 362 numeric fields,
+The OQ profile model schema is
+`time-plus-four-class-severity-plus-three-class-wld-oq-profile-v1`. The official 362 numeric fields,
 23 board planes, board CNN, causal TCN, and thinking-time head remain unchanged and
 strict-load from the official checkpoint. A small MLP reads the selected normalized
 Player fields concatenated with their separate missing masks. Its final projection
@@ -20,7 +20,7 @@ produces severity-only FiLM gamma/beta and is initialized to exact zero:
 Consequently a newly initialized profile model is numerically identical to the
 baseline severity model when their ordinary severity weights are the same. Player
 context cannot enter or alter the thinking-time head. A profile checkpoint has schema
-`tcn-loss-profile-checkpoint-v1` and records the 31-field order, train-only profile
+`tcn-loss-profile-wld-checkpoint-v2` and records the 31-field order, train-only profile
 preprocessing hash, temporal policy, temporal-leakage authorization, ablation name,
 and ablation hash. Profile training and inference fail rather than falling back when
 any required array or identity field is absent or different.
@@ -79,6 +79,15 @@ probabilities sum to one by construction. Training uses one weighted four-class
 cross-entropy; no concrete loss value is regressed and no independent binary heads
 can contradict each other. Class weights are a single finite four-entry config.
 
+The same conditioned hidden representation feeds an independent WLD linear head in
+the fixed order `class_no_wld_loss`, `class_half_wld_loss`,
+`class_full_wld_loss`. Its public scalar is
+`expected_wld_loss = 0.5 * p_half + p_full`, always in `[0,1]`. WLD supervision uses
+three-class cross-entropy only at pass-excluded `global_placement_ply >= 39`; a batch
+without valid WLD nodes contributes a graph-connected zero WLD term. Legacy
+checkpoints may omit only `wld_head.weight` and `wld_head.bias`; any other missing or
+unexpected state key fails before a final strict load.
+
 ## Transfer sequence
 
 1. Strict-load the official best checkpoint into the unchanged backbone/time head.
@@ -86,6 +95,11 @@ can contradict each other. Class weights are a single finite four-entry config.
 3. Unfreeze and fine-tune the backbone and both tasks at the smaller configured LR.
 4. Retain the thinking-time MSE as an auxiliary objective.
 5. Select one checkpoint on the fixed validation games and evaluate the test games once.
+
+An optional `wld-head-only` extension freezes the backbone, profile conditioning,
+thinking-time head, and severity head. It selects on validation WLD cross-entropy and
+retains the incoming checkpoint as the epoch-zero baseline. Test data never selects
+the extension epoch.
 
 No no-time, no-CNN, Transformer, CatBoost, stage-specific model, or broad search is
 implemented.

@@ -1,15 +1,32 @@
 # TCN human disc-loss model
 
-This directory contains the isolated engineering work for the single selected model:
-the official full-feature 8×8 board-CNN causal TCN, its retained thinking-time head,
-and one current-time-conditioned four-class severity head. No formal training has
-been started.
+This directory contains the official full-feature 8×8 board-CNN causal TCN, its
+retained thinking-time head, one current-time-conditioned four-class severity head,
+and an independent three-class WLD head on the same conditioned representation.
+Formal training artifacts are retained under `outputs/`. The 12 selected public
+checkpoints are also published under `models/primary_wld_ensemble12/`; no personal
+adapter or profile-specific fine-tuned checkpoint is included there.
 
 Every split and future cohort uses the single
 `uniform-no-current-player-loss-history-v1` input policy. Current-player prior loss
 labels, aggregates, model probabilities, and residuals are absent from the model
 feature tensor rather than masked with zeros. There is no full/masked dual mode or
 random context masking.
+
+## Primary model
+
+`PRIMARY_MODEL.json` is the repository's authoritative model pointer. The current
+primary model is the accepted 12-member, 11,200-game full-31 OQ Player profile
+ensemble with the ply-39 WLD head:
+
+```text
+models/primary_wld_ensemble12/ensemble_manifest.json
+```
+
+Inference and player investigations should resolve the ensemble through the primary
+model registry and must use profile-aware materialization. The superseded 3,531-game
+baseline ensemble without Player profile inputs is retained under `archive/models/`
+for historical reproduction only.
 
 Safe checks:
 
@@ -111,10 +128,13 @@ python scripts/reporting/create_tcn_loss_diagnostic_png.py `
   --dpi 170
 ```
 
-The reusable plotter accepts `train`, `validation`, or `test`. It renders a sampled
-node scatter plot, grouped mean risk with a 95% mean interval, and three calibration
-panels with ROC-AUC and PR-AUC. Calibration and metrics always use every labelled node
-in the selected split; only the dense scatter layer is sampled.
+The reusable plotter accepts `train`, `validation`, or `test`. It renders the original
+disc-loss scatter and three calibration panels plus a separate WLD scatter of actual
+`wld_loss` against the primary public metric `expected_wld_loss`. The WLD panel uses
+only label-available nodes at pass-excluded `global_placement_ply >= 39`; earlier plies
+never enter the plot. Group means include 95% mean intervals. Calibration, group means,
+and metrics use every labelled node in the selected split; only dense scatter layers
+are sampled.
 
 Formal training is deliberately gated by the `train` subcommand and
 `--confirm-new-data-ready`. It requires CUDA and a validated model-ready NPZ with
@@ -138,8 +158,18 @@ classes are `0`, `1–3`, `4–9`, and `>=10`. One distribution supplies
 `probability_loss_zero`, `probability_loss_ge4`, and `probability_loss_ge10`, so their
 logical ordering is structural rather than post-hoc.
 
-The remaining blocker is the new approximately 10,000-game dataset and its final
-schema/materialized feature bundle. See `DATA_CONTRACT.md`.
+The WLD head emits `class_no_wld_loss`, `class_half_wld_loss`, and
+`class_full_wld_loss`. Public inference uses
+`expected_wld_loss = 0.5 * p_half + p_full`; `probability_wld_any = p_half + p_full`
+is diagnostic only. Both are exported only for label-applicable placements at
+pass-excluded `global_placement_ply >= 39`; earlier placements are blank/not
+applicable. Training uses three-class cross-entropy, not WLD-value regression.
+
+`training_mode: "wld-head-only"` freezes every parameter except `wld_head` and
+selects checkpoints using validation WLD cross-entropy. The incoming warm-start
+checkpoint remains the epoch-zero candidate, so an extension cannot replace it
+unless validation WLD loss improves. `--warm-start-checkpoint-name latest.pt`
+explicitly starts a new ensemble stage from each completed member's latest checkpoint.
 
 ## Fixed-test ensemble and personal residual adapters
 
@@ -163,9 +193,12 @@ official hint1/hint6 inputs and reuses the same 362-feature/23-channel pipeline 
 checkpoint preprocessing. Source and effective clock fields remain in the resulting
 NPZ for audit.
 
-Personal calibration freezes every parameter in each trained member. It trains only
-a zero-initialized 64-by-4 residual-logit matrix and four-element bias with the fixed
-game-equal cross-entropy, `KL(base || personal)`, and L2 objective:
+Personal calibration freezes every parameter in each trained member. It trains two
+independent zero-initialized residual-logit adapters: 64-by-4 plus bias for severity,
+and 64-by-3 plus bias for WLD. Both use the fixed game-equal cross-entropy,
+`KL(base || personal)`, and L2 objective. The WLD adapter uses only nodes with an
+available WLD label at pass-excluded `global_placement_ply >= 39`; games with no
+eligible WLD node remain in the fixed control-game denominator with zero contribution:
 
 ```powershell
 python train.py personalize-ensemble --data <personal-model-ready.npz> `

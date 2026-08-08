@@ -17,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from player_analysis_toolkit.analysis_core import (
+    ENGINE_WLD_TOTAL_FIELD,
     account_key,
     aggregate_loss_games,
     book_lookup,
@@ -35,6 +36,7 @@ from player_analysis_toolkit.analysis_core import (
     target_side,
     threshold_count,
     two_part_model,
+    validate_wld_from_ply,
     model_probability_summary,
     write_json,
 )
@@ -375,9 +377,11 @@ def aggregate_raw_time(games: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def aggregate_segment_loss(games: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_segment_loss(
+    games: list[dict[str, Any]], wld_from_ply: int | None = None
+) -> dict[str, Any]:
     """Aggregate loss while retaining explicit post-off-book boundaries per game."""
-    value = aggregate_loss_games(games)
+    value = aggregate_loss_games(games, wld_from_ply)
     metadata = {str(game["gameId"]): game for game in games}
     for item in value["games"]:
         game = metadata[str(item["gameId"])]
@@ -863,7 +867,9 @@ def segment_member(member: dict[str, Any], expected_mode: str) -> dict[str, Any]
     }
 
 
-def public_segment(member_segments: list[dict[str, Any]]) -> dict[str, Any]:
+def public_segment(
+    member_segments: list[dict[str, Any]], wld_from_ply: int | None = None
+) -> dict[str, Any]:
     full_games = [game for member in member_segments for game in member["fullGames"]]
     post_games = [game for member in member_segments for game in member["postGames"]]
     return {
@@ -879,11 +885,11 @@ def public_segment(member_segments: list[dict[str, Any]]) -> dict[str, Any]:
             for member in member_segments
         ],
         "fullGame": {
-            "loss": aggregate_segment_loss(full_games),
+            "loss": aggregate_segment_loss(full_games, wld_from_ply),
             "time": aggregate_raw_time(full_games),
         },
         "postOffBookInclusive": {
-            "loss": aggregate_segment_loss(post_games),
+            "loss": aggregate_segment_loss(post_games, wld_from_ply),
             "time": aggregate_raw_time(post_games),
         },
     }
@@ -979,12 +985,17 @@ def individual_game_empirical_position(
     }
 
 
-def offbook_stats(config: dict[str, Any]) -> dict[str, Any]:
+def offbook_stats(
+    config: dict[str, Any], wld_from_ply: int | None = None
+) -> dict[str, Any]:
+    boundary = validate_wld_from_ply(
+        wld_from_ply if wld_from_ply is not None else config.get("wldFromPly")
+    )
     target_config = config.get("target")
     if not isinstance(target_config, dict):
         raise ValueError("stats config requires a target object")
     target_segments = [segment_member(member, "target") for member in group_members(target_config, "target")]
-    target = public_segment(target_segments)
+    target = public_segment(target_segments, boundary)
     references: dict[str, Any] = {}
     comparisons: dict[str, Any] = {}
     raw_references = config.get("references", [])
@@ -995,7 +1006,7 @@ def offbook_stats(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("every reference group must be an object")
         name = str(group.get("name") or f"reference-{index + 1}")
         segments = [segment_member(member, "reference") for member in group_members(group, name)]
-        reference = public_segment(segments)
+        reference = public_segment(segments, boundary)
         references[name] = reference
         target_full_loss = target["fullGame"]["loss"]
         reference_full_loss = reference["fullGame"]["loss"]
@@ -1045,7 +1056,7 @@ def offbook_stats(config: dict[str, Any]) -> dict[str, Any]:
                 target_loss, reference_loss
             ),
         }
-    return {
+    result = {
         "schema": "player-offbook-segment-stats-v1",
         "segmentPolicy": "post-off-book begins at and includes the Agent-marked target-player move",
         "manualMarkPolicy": "all segment boundaries come from validated Agent manual records; no boundary is inferred by this script",
@@ -1053,9 +1064,17 @@ def offbook_stats(config: dict[str, Any]) -> dict[str, Any]:
         "references": references,
         "comparisons": comparisons,
     }
+    if boundary is not None:
+        result["wldFromPly"] = boundary
+    return result
 
 
-def offbook_model(config: dict[str, Any]) -> dict[str, Any]:
+def offbook_model(
+    config: dict[str, Any], wld_from_ply: int | None = None
+) -> dict[str, Any]:
+    boundary = validate_wld_from_ply(
+        wld_from_ply if wld_from_ply is not None else config.get("wldFromPly")
+    )
     dataset_config = config.get("dataset")
     if not isinstance(dataset_config, dict):
         raise ValueError("offbook model config requires a dataset object")
@@ -1082,7 +1101,7 @@ def offbook_model(config: dict[str, Any]) -> dict[str, Any]:
         controls = [game for game in games if game["gameId"] not in reported_ids]
         return {
             "comparison": compare_loss_groups(
-                reported, controls, games, bootstrap, seed + seed_offset
+                reported, controls, games, bootstrap, seed + seed_offset, boundary
             ),
             "clusterAwareTwoPartModel": two_part_model(
                 games, reported_ids, model_bootstrap, seed + seed_offset + 20
@@ -1098,7 +1117,7 @@ def offbook_model(config: dict[str, Any]) -> dict[str, Any]:
         seed + 200,
     )
 
-    return {
+    result = {
         "schema": "player-offbook-segment-model-v1",
         "segmentPolicy": "post-off-book begins at and includes the Agent-marked target-player move",
         "manualMarkPolicy": "all segment boundaries come from validated Agent manual records; no boundary is inferred by this script",
@@ -1111,6 +1130,9 @@ def offbook_model(config: dict[str, Any]) -> dict[str, Any]:
         "postOffBookPhaseCombined": phase_combined,
         "plyCoordinateAudit": summarize_ply_audits(segments),
     }
+    if boundary is not None:
+        result["wldFromPly"] = boundary
+    return result
 
 
 def offbook_stratified_combinations(config: dict[str, Any]) -> dict[str, Any]:
@@ -1211,11 +1233,11 @@ def command_record(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_stats(args: argparse.Namespace) -> dict[str, Any]:
     config_path = Path(args.config).resolve()
-    value = offbook_stats(read_json(config_path))
+    value = offbook_stats(read_json(config_path), args.wld_from_ply)
     value["sourceConfig"] = str(config_path)
     value["sourceConfigSha256"] = file_sha256(config_path)
     write_new_json(args.output, value)
-    return {
+    summary = {
         "schema": value["schema"],
         "targetPostOffBookGameCount": value["target"]["postOffBookInclusive"]["loss"]["gameCount"],
         "targetPostOffBookLossAtLeast4Count": value["target"]["postOffBookInclusive"]["loss"]["lossAtLeast4Count"],
@@ -1224,15 +1246,18 @@ def command_stats(args: argparse.Namespace) -> dict[str, Any]:
         "targetPostOffBookLossAtLeast10Rate": value["target"]["postOffBookInclusive"]["loss"]["lossAtLeast10Rate"],
         "referenceGroups": list(value["references"]),
     }
+    if value.get("wldFromPly") is not None:
+        summary[ENGINE_WLD_TOTAL_FIELD] = value["target"]["fullGame"]["loss"][ENGINE_WLD_TOTAL_FIELD]
+    return summary
 
 
 def command_model(args: argparse.Namespace) -> dict[str, Any]:
     config_path = Path(args.config).resolve()
-    value = offbook_model(read_json(config_path))
+    value = offbook_model(read_json(config_path), args.wld_from_ply)
     value["sourceConfig"] = str(config_path)
     value["sourceConfigSha256"] = file_sha256(config_path)
     write_new_json(args.output, value)
-    return {
+    summary = {
         "schema": value["schema"],
         "datasetGameCount": value["datasetGameCount"],
         "postOffBookDatasetGameCount": value["postOffBookDatasetGameCount"],
@@ -1240,6 +1265,9 @@ def command_model(args: argparse.Namespace) -> dict[str, Any]:
         "reportedPostOffBookLossAtLeast4Rate": value["postOffBookInclusive"]["comparison"]["reported"]["lossAtLeast4Rate"],
         "reportedPostOffBookLossAtLeast10Rate": value["postOffBookInclusive"]["comparison"]["reported"]["lossAtLeast10Rate"],
     }
+    if value.get("wldFromPly") is not None:
+        summary[ENGINE_WLD_TOTAL_FIELD] = value["fullGame"]["comparison"]["reported"][ENGINE_WLD_TOTAL_FIELD]
+    return summary
 
 
 def command_stratified(args: argparse.Namespace) -> dict[str, Any]:
@@ -1277,6 +1305,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     stats = sub.add_parser("offbook-stats", help="calculate full-game and inclusive post-off-book statistics")
     stats.add_argument("--config", required=True)
+    stats.add_argument("--wld-from-ply", type=int, choices=(39,))
     stats.add_argument("--output", required=True)
     stats.set_defaults(handler=command_stats)
 
@@ -1285,6 +1314,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="compare reported games and fit two-part models before and after off-book segmentation",
     )
     model.add_argument("--config", required=True)
+    model.add_argument("--wld-from-ply", type=int, choices=(39,))
     model.add_argument("--output", required=True)
     model.set_defaults(handler=command_model)
 

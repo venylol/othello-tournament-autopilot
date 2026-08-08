@@ -3,7 +3,9 @@ import unittest
 import torch
 from torch.nn import functional as F
 
-from src.personal_adapter import AdapterConfig, adapter_objective
+from src.personal_adapter import (
+    AdapterConfig, adapter_objective, validate_personal_game_sets, wld_adapter_objective,
+)
 
 
 class PersonalAdapterTests(unittest.TestCase):
@@ -40,6 +42,30 @@ class PersonalAdapterTests(unittest.TestCase):
             torch.zeros((64, 4), dtype=torch.float64), torch.zeros(4, dtype=torch.float64), self.cfg,
         )
         self.assertAlmostEqual(float(losses["gameEqualCrossEntropy"]), float(torch.log(torch.tensor(4.0, dtype=torch.float64)) / 2), places=12)
+
+    def test_wld_adapter_is_identity_and_game_equal_on_applicable_nodes(self):
+        hidden = torch.arange(3 * 64, dtype=torch.float64).reshape(3, 64) / 100
+        logits = torch.tensor(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float64
+        )
+        targets = torch.tensor([0, 1, 2])
+        game_index = torch.tensor([0, 0, 1])
+        delta_w = torch.zeros((64, 3), dtype=torch.float64)
+        delta_b = torch.zeros(3, dtype=torch.float64)
+        personal = torch.softmax(logits + hidden @ delta_w + delta_b, dim=-1)
+        self.assertTrue(torch.equal(personal, torch.softmax(logits, dim=-1)))
+        losses = wld_adapter_objective(
+            hidden, logits, targets, game_index, 3, delta_w, delta_b, self.cfg
+        )
+        node_ce = F.cross_entropy(logits, targets, reduction="none")
+        expected = (node_ce[:2].mean() + node_ce[2:].mean() + 0.0) / 3
+        self.assertAlmostEqual(float(losses["gameEqualCrossEntropy"]), float(expected), places=12)
+        self.assertEqual(float(losses["gameEqualKlBaseToPersonal"]), 0.0)
+
+    def test_personal_split_accepts_reusable_group_sizes(self):
+        validate_personal_game_sets([f"c{i}" for i in range(24)], [f"r{i}" for i in range(6)])
+        with self.assertRaisesRegex(ValueError, "non-empty disjoint"):
+            validate_personal_game_sets(["g"], ["g"])
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from player_analysis_toolkit.analysis_core import (
+    PREDICTED_WLD_TOTAL_FIELD,
     MOVE_RE,
     account_key,
     build_personal_book,
@@ -20,6 +21,8 @@ from player_analysis_toolkit.analysis_core import (
     game_players,
     load_engine_games,
     loss_analysis,
+    predicted_wld_totals_by_game_player,
+    read_prediction_rows,
     read_json,
     reference_analysis,
     replay_game,
@@ -199,6 +202,7 @@ def command_loss(args: argparse.Namespace) -> dict[str, Any]:
         args.bootstrap,
         args.model_bootstrap,
         args.seed,
+        args.wld_from_ply,
     )
     write_json(args.output, value)
     return value
@@ -211,7 +215,7 @@ def command_time(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def command_reference(args: argparse.Namespace) -> dict[str, Any]:
-    value = reference_analysis(read_json(args.config))
+    value = reference_analysis(read_json(args.config), args.wld_from_ply)
     write_json(args.output, value)
     return value
 
@@ -239,6 +243,7 @@ def command_run_all(args: argparse.Namespace) -> dict[str, Any]:
         int(config.get("bootstrap", 10_000)),
         int(config.get("modelBootstrap", 1_000)),
         int(config.get("seed", 20260801)),
+        config.get("wldFromPly"),
     )
     write_json(output_dir / "loss-analysis.json", loss)
     time = time_analysis(engine_dir, account, set(reported))
@@ -249,11 +254,56 @@ def command_run_all(args: argparse.Namespace) -> dict[str, Any]:
         "files": ["data-summary.json", "events.json", "events.csv", "games.json", "games.csv", "opening-analysis.json", "loss-analysis.json", "time-analysis.json"],
     }
     if config.get("referenceConfig"):
-        reference = reference_analysis(read_json(config["referenceConfig"]))
+        reference_config = read_json(config["referenceConfig"])
+        reference = reference_analysis(
+            reference_config,
+            config.get("wldFromPly", reference_config.get("wldFromPly")),
+        )
         write_json(output_dir / "reference-analysis.json", reference)
         result["files"].append("reference-analysis.json")
     write_json(output_dir / "run-summary.json", result)
     return result
+
+
+def command_model_wld(args: argparse.Namespace) -> dict[str, Any]:
+    value = predicted_wld_totals_by_game_player(
+        read_prediction_rows(args.predictions), args.wld_from_ply
+    )
+    write_json(args.output, value)
+    if args.csv_output:
+        write_csv(args.csv_output, value["gamePlayerTotals"])
+    if args.player_csv_output:
+        write_csv(args.player_csv_output, value["playerTotals"])
+    if args.markdown_output:
+        lines = [
+            "# 模型预期 WLD 损失汇总",
+            "",
+            "## 每局、每位棋手",
+            "",
+            f"| game_id | player_id | side | {PREDICTED_WLD_TOTAL_FIELD} |",
+            "|---|---|---|---:|",
+        ]
+        for row in value["gamePlayerTotals"]:
+            lines.append(
+                f"| {row['game_id']} | {row.get('player_id') or ''} | {row.get('side') or ''} | "
+                f"{row[PREDICTED_WLD_TOTAL_FIELD]} |"
+            )
+        lines.extend([
+            "",
+            "## 每位棋手总计",
+            "",
+            f"| player_id | side | {PREDICTED_WLD_TOTAL_FIELD} |",
+            "|---|---|---:|",
+        ])
+        for row in value["playerTotals"]:
+            lines.append(
+                f"| {row.get('player_id') or ''} | {row.get('side') or ''} | "
+                f"{row[PREDICTED_WLD_TOTAL_FIELD]} |"
+            )
+        target = Path(args.markdown_output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return value
 
 
 def add_common_reported(parser: argparse.ArgumentParser) -> None:
@@ -309,6 +359,12 @@ def build_parser() -> argparse.ArgumentParser:
     loss.add_argument("--bootstrap", type=int, default=10_000)
     loss.add_argument("--model-bootstrap", type=int, default=1_000)
     loss.add_argument("--seed", type=int, default=20260801)
+    loss.add_argument(
+        "--wld-from-ply",
+        type=int,
+        choices=(39,),
+        help="add engine WLD loss totals from inclusive pass-free global placement ply 39",
+    )
     loss.add_argument("--output", required=True)
     loss.set_defaults(handler=command_loss)
 
@@ -320,12 +376,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     reference = sub.add_parser("reference", help="compare target games with configured reference groups")
     reference.add_argument("--config", required=True)
+    reference.add_argument(
+        "--wld-from-ply",
+        type=int,
+        choices=(39,),
+        help="override/add WLD totals from inclusive pass-free global placement ply 39",
+    )
     reference.add_argument("--output", required=True)
     reference.set_defaults(handler=command_reference)
 
     run_all = sub.add_parser("run-all", help="run summary, opening, loss, time and optional reference analysis")
     run_all.add_argument("--config", required=True)
     run_all.set_defaults(handler=command_run_all)
+
+    model_wld = sub.add_parser(
+        "model-wld",
+        help="sum expected_wld_loss by game and mover from model prediction CSV/JSON",
+    )
+    model_wld.add_argument("--predictions", required=True)
+    model_wld.add_argument("--wld-from-ply", type=int, choices=(39,), required=True)
+    model_wld.add_argument("--output", required=True, help="UTF-8 JSON output")
+    model_wld.add_argument("--csv-output", default="", help="optional per-game/player UTF-8 CSV")
+    model_wld.add_argument("--player-csv-output", default="", help="optional per-player UTF-8 CSV")
+    model_wld.add_argument("--markdown-output", default="", help="optional UTF-8 Markdown totals report")
+    model_wld.set_defaults(handler=command_model_wld)
     return parser
 
 

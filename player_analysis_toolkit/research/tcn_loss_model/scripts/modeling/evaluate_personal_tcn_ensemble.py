@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--offbook-ply", action="append", required=True, help="GAME_ID=PLY")
     parser.add_argument("--node-output", type=Path, required=True)
     parser.add_argument("--summary-output", type=Path, required=True)
+    parser.add_argument(
+        "--control-calibration-output", type=Path,
+        help="optional reusable pre/post-adaptation calibration JSON for all control-split nodes",
+    )
     parser.add_argument("--bootstrap-replicates", type=int, default=10000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260803)
     parser.add_argument("--device", default="cuda:0")
@@ -114,6 +118,133 @@ def summarize_group(frame: pd.DataFrame, member_probabilities: dict[str, np.ndar
     }
 
 
+def summarize_predicted_group(
+    frame: pd.DataFrame,
+    member_probabilities: dict[str, np.ndarray],
+    member_expected_wld_loss: np.ndarray,
+    game_ids: list[str],
+    member_draws: np.ndarray,
+    game_draws: np.ndarray,
+) -> dict[str, Any]:
+    """Game-equal ensemble predictions and member+whole-game bootstrap intervals."""
+    use = frame["game_id"].isin(game_ids).to_numpy()
+    group = frame.loc[use].reset_index(drop=True)
+    group_games = group["game_id"].to_numpy()
+    games = np.asarray(game_ids)
+    probabilities = {name: values[:, use] for name, values in member_probabilities.items()}
+    wld = member_expected_wld_loss[:, use]
+    wld_applicable = group["wld_applicable"].to_numpy(dtype=bool)
+
+    values_by_metric = {**probabilities, "expected_wld_loss": wld}
+    applicability = {
+        "zero": np.ones(len(group), dtype=bool),
+        "ge4": np.ones(len(group), dtype=bool),
+        "ge10": np.ones(len(group), dtype=bool),
+        "expected_wld_loss": wld_applicable,
+    }
+    point: dict[str, float] = {}
+    per_game: dict[str, list[dict[str, Any]]] = {}
+    bootstrap: dict[str, np.ndarray] = {
+        name: np.zeros(len(member_draws), dtype=np.float64) for name in values_by_metric
+    }
+    for name, member_values in values_by_metric.items():
+        eligible = applicability[name]
+        ensemble = member_values.mean(axis=0)
+        rows = []
+        for game_id in game_ids:
+            game_mask = (group_games == game_id) & eligible
+            if not game_mask.any():
+                raise ValueError(f"game {game_id} has no applicable nodes for {name}")
+            rows.append({
+                "gameId": game_id,
+                "nodes": int(game_mask.sum()),
+                "meanEnsemblePrediction": float(ensemble[game_mask].mean()),
+            })
+        per_game[name] = rows
+        point[name] = float(np.mean([row["meanEnsemblePrediction"] for row in rows]))
+        for replicate, (selected_members, selected_game_indexes) in enumerate(zip(member_draws, game_draws, strict=True)):
+            replicate_prediction = member_values[selected_members].mean(axis=0)
+            bootstrap[name][replicate] = np.mean([
+                replicate_prediction[(group_games == games[index]) & eligible].mean()
+                for index in selected_game_indexes
+            ])
+    return {
+        "aggregationUnit": "whole-game",
+        "pointEstimates": point,
+        "bootstrap95PercentIntervals": {name: quantiles(values) for name, values in bootstrap.items()},
+        "perGame": per_game,
+        "nodes": int(len(group)),
+        "wldApplicableNodes": int(wld_applicable.sum()),
+    }
+
+
+def summarize_control_adaptation(
+    severity_targets: np.ndarray,
+    wld_targets: np.ndarray,
+    wld_losses: np.ndarray,
+    wld_applicable: np.ndarray,
+    base_severity: np.ndarray,
+    adapted_severity: np.ndarray,
+    base_wld: np.ndarray,
+    adapted_wld: np.ndarray,
+    game_count: int,
+) -> dict[str, Any]:
+    actual = {
+        "zero": severity_targets == 0,
+        "ge4": severity_targets >= 2,
+        "ge10": severity_targets == 3,
+    }
+
+    def severity_probability(values: np.ndarray, metric: str) -> np.ndarray:
+        return {
+            "zero": values[:, 0],
+            "ge4": values[:, 2] + values[:, 3],
+            "ge10": values[:, 3],
+        }[metric]
+
+    hard = {
+        "fourClassExact": {
+            "before": float((base_severity.argmax(axis=1) == severity_targets).mean()),
+            "after": float((adapted_severity.argmax(axis=1) == severity_targets).mean()),
+        },
+        "wldThreeClassExact": {
+            "before": float((base_wld[wld_applicable].argmax(axis=1) == wld_targets[wld_applicable]).mean()),
+            "after": float((adapted_wld[wld_applicable].argmax(axis=1) == wld_targets[wld_applicable]).mean()),
+        },
+    }
+    probability = {}
+    for metric in ("zero", "ge4", "ge10"):
+        observed = float(actual[metric].mean())
+        before = float(severity_probability(base_severity, metric).mean())
+        after = float(severity_probability(adapted_severity, metric).mean())
+        hard[metric] = {
+            "before": float(((severity_probability(base_severity, metric) >= 0.5) == actual[metric]).mean()),
+            "after": float(((severity_probability(adapted_severity, metric) >= 0.5) == actual[metric]).mean()),
+        }
+        probability[metric] = {
+            "actual": observed, "before": before, "beforeError": before - observed,
+            "after": after, "afterError": after - observed,
+        }
+    base_expected_wld = 0.5 * base_wld[:, 1] + base_wld[:, 2]
+    adapted_expected_wld = 0.5 * adapted_wld[:, 1] + adapted_wld[:, 2]
+    observed_wld = float(wld_losses[wld_applicable].mean())
+    before_wld = float(base_expected_wld[wld_applicable].mean())
+    after_wld = float(adapted_expected_wld[wld_applicable].mean())
+    probability["expectedWldLoss"] = {
+        "actual": observed_wld, "before": before_wld, "beforeError": before_wld - observed_wld,
+        "after": after_wld, "afterError": after_wld - observed_wld,
+    }
+    for values in hard.values():
+        values["improvement"] = values["after"] - values["before"]
+    return {
+        "schema": "personal-tcn-control-adaptation-calibration-v2", "status": "completed",
+        "evaluationRole": "in-sample-control-adapter-fit",
+        "controlGames": game_count, "severityNodes": int(len(severity_targets)),
+        "wldApplicableNodes": int(wld_applicable.sum()),
+        "hardDecisionMatchRates": hard, "probabilityRateCalibration": probability,
+        "aggregation": "node-weighted display statistics; adapter optimization itself is game-equal",
+        "wldApplicabilityPolicy": "wld_label_available and global_placement_ply >= 39",
+    }
 @torch.no_grad()
 def main() -> int:
     started_clock = time.perf_counter()
@@ -127,7 +258,9 @@ def main() -> int:
     if len(members) != 12:
         raise ValueError(f"expected exactly 12 personal members, found {len(members)}")
     first_base_member = torch.load(Path(members[0]["baseEnsembleCheckpoint"]), map_location="cpu", weights_only=False)
-    use_oq_profile = first_base_member.get("schema") == "tcn-loss-profile-checkpoint-v1"
+    use_oq_profile = first_base_member.get("schema") in {
+        "tcn-loss-profile-checkpoint-v1", "tcn-loss-profile-wld-checkpoint-v2"
+    }
     profile_manifest = first_base_member.get("manifest", {})
     profile_ablation = str(profile_manifest.get("oqProfileAblation") or "")
     validation = validate_model_ready_npz(
@@ -155,6 +288,24 @@ def main() -> int:
         selected_games = game_grid[selected]
         after_offbook = np.asarray([node_ply >= offbook[game_id] for node_ply, game_id in zip(ply, selected_games, strict=True)])
         flat_indexes = np.flatnonzero(selected.reshape(-1))[after_offbook]
+        splits = data["split"].astype(str)
+        split_reported = set(data["game_id"].astype(str)[splits == "test"])
+        if set(reported) != split_reported:
+            raise ValueError(
+                f"reported arguments do not match NPZ test split: arguments={sorted(reported)}, "
+                f"split={sorted(split_reported)}"
+            )
+        control_grid = np.broadcast_to((splits == "train")[:, None], (games, steps))
+        control_selected = valid & control_grid
+        control_flat_indexes = np.flatnonzero(control_selected.reshape(-1))
+        control_game_count = int((splits == "train").sum())
+        control_severity_targets = data["severity_class"].reshape(-1)[control_flat_indexes].astype(int)
+        control_wld_targets = data["wld_class"].reshape(-1)[control_flat_indexes].astype(int)
+        control_wld_losses = data["wld_loss"].reshape(-1)[control_flat_indexes].astype(float)
+        control_wld_applicable = (
+            data["wld_label_available"].reshape(-1)[control_flat_indexes].astype(bool)
+            & (data["global_placement_ply"].reshape(-1)[control_flat_indexes] >= 39)
+        )
         base_columns = {
             "game_id": game_grid.reshape(-1)[flat_indexes],
             "player_id": data["player_id"].reshape(-1)[flat_indexes],
@@ -167,9 +318,14 @@ def main() -> int:
             "actual_loss_ge10": data["label_ge10"].reshape(-1)[flat_indexes],
             "raw_thinking_time_ms": data["raw_thinking_time_ms"].reshape(-1)[flat_indexes],
             "effective_thinking_time_ms": data["effective_thinking_time_ms"].reshape(-1)[flat_indexes],
+            "wld_applicable": (
+                data["wld_label_available"].reshape(-1)[flat_indexes].astype(bool)
+                & (data["global_placement_ply"].reshape(-1)[flat_indexes] >= 39)
+            ),
         }
         source_by_game = dict(zip(data["game_id"].astype(str), data["source_time_limit_ms"].astype(int), strict=True))
         scale_by_game = dict(zip(data["game_id"].astype(str), data["time_scale_factor"].astype(float), strict=True))
+        reported_source_limits = {game_id: int(source_by_game[game_id]) for game_id in reported}
         base_columns["source_time_limit_ms"] = [source_by_game[game_id] for game_id in base_columns["game_id"]]
         base_columns["effective_time_limit_ms"] = 300000
         base_columns["time_scale_factor"] = [scale_by_game[game_id] for game_id in base_columns["game_id"]]
@@ -183,13 +339,16 @@ def main() -> int:
             model_inputs["oq_profile_missing"] = torch.from_numpy(data["oq_profile_missing"]).to(device)
     frame = pd.DataFrame(base_columns)
     member_classes = []
+    member_wld = []
+    control_base_classes, control_adapted_classes = [], []
+    control_base_wld, control_adapted_wld = [], []
     for member in members:
         checkpoint_path = Path(member["personalCheckpoint"])
         saved = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        if saved.get("schema") != "personal-tcn-adapter-v1":
+        if saved.get("schema") not in {"personal-tcn-adapter-v1", "personal-tcn-adapter-v2"}:
             raise ValueError(f"personal adapter checkpoint schema mismatch: {checkpoint_path}")
         base_member = torch.load(Path(member["baseEnsembleCheckpoint"]), map_location="cpu", weights_only=False)
-        expected_schema = "tcn-loss-profile-checkpoint-v1" if use_oq_profile else "tcn-loss-checkpoint-v1"
+        expected_schema = "tcn-loss-profile-wld-checkpoint-v2" if use_oq_profile else "tcn-loss-wld-checkpoint-v2"
         if base_member.get("schema") != expected_schema:
             raise ValueError("personal adapter base ensemble checkpoint schema mismatch")
         model, _ = (
@@ -212,20 +371,50 @@ def main() -> int:
         if not np.all(np.isfinite(probabilities)) or not np.allclose(probabilities.sum(axis=1), 1.0, atol=1e-6):
             raise ValueError("non-finite or non-unit personal class probabilities")
         member_classes.append(probabilities)
+        wld_logits = output.wld_logits.detach().cpu().double().reshape(-1, 3)[flat_indexes]
+        if saved.get("schema") == "personal-tcn-adapter-v2":
+            wld_probabilities = torch.softmax(
+                wld_logits + hidden @ saved["wldDeltaW"].double() + saved["wldDeltaB"].double(), dim=-1
+            ).numpy()
+        else:
+            wld_probabilities = torch.softmax(wld_logits, dim=-1).numpy()
+        expected_wld = 0.5 * wld_probabilities[:, 1] + wld_probabilities[:, 2]
+        if not np.all(np.isfinite(expected_wld)) or np.any((expected_wld < 0) | (expected_wld > 1)):
+            raise ValueError("non-finite or out-of-range expected WLD loss")
+        member_wld.append(expected_wld)
+        if args.control_calibration_output:
+            all_hidden = output.severity_hidden.detach().cpu().double().reshape(-1, 64)[control_flat_indexes]
+            all_severity_logits = output.severity_logits.detach().cpu().double().reshape(-1, 4)[control_flat_indexes]
+            all_wld_logits = output.wld_logits.detach().cpu().double().reshape(-1, 3)[control_flat_indexes]
+            control_base_classes.append(torch.softmax(all_severity_logits, dim=-1).numpy())
+            control_adapted_classes.append(torch.softmax(
+                all_severity_logits + all_hidden @ saved["deltaW"].double() + saved["deltaB"].double(), dim=-1
+            ).numpy())
+            control_base_wld.append(torch.softmax(all_wld_logits, dim=-1).numpy())
+            if saved.get("schema") == "personal-tcn-adapter-v2":
+                adapted_wld_logits = all_wld_logits + all_hidden @ saved["wldDeltaW"].double() + saved["wldDeltaB"].double()
+            else:
+                adapted_wld_logits = all_wld_logits
+            control_adapted_wld.append(torch.softmax(adapted_wld_logits, dim=-1).numpy())
         member_index = int(member["member"])
         for class_index, class_name in enumerate(("zero", "1_3", "4_9", "ge10")):
             frame[f"member_{member_index:02d}_probability_class_{class_name}"] = probabilities[:, class_index]
         frame[f"member_{member_index:02d}_probability_loss_ge4"] = probabilities[:, 2] + probabilities[:, 3]
+        frame[f"member_{member_index:02d}_expected_wld_loss"] = np.where(
+            frame["wld_applicable"], expected_wld, np.nan
+        )
         del model, output
         if device.type == "cuda":
             torch.cuda.empty_cache()
     classes = np.stack(member_classes)
+    wld_values = np.stack(member_wld)
     ensemble_classes = classes.mean(axis=0)
     for class_index, class_name in enumerate(("zero", "1_3", "4_9", "ge10")):
         frame[f"ensemble_probability_class_{class_name}"] = ensemble_classes[:, class_index]
     frame["probability_loss_zero"] = ensemble_classes[:, 0]
     frame["probability_loss_ge4"] = ensemble_classes[:, 2] + ensemble_classes[:, 3]
     frame["probability_loss_ge10"] = ensemble_classes[:, 3]
+    frame["expected_wld_loss"] = np.where(frame["wld_applicable"], wld_values.mean(axis=0), np.nan)
     for metric, (actual_column, probability_column) in METRICS.items():
         frame[f"actual_minus_expected_{metric}"] = frame[actual_column] - frame[probability_column]
     args.node_output.parent.mkdir(parents=True, exist_ok=True)
@@ -240,6 +429,9 @@ def main() -> int:
         group_results[game_id] = summarize_group(frame, member_probabilities, [game_id], member_draws, game_draws)
     member_draws, game_draws = bootstrap_draws(args.bootstrap_replicates, len(members), len(reported), args.bootstrap_seed)
     group_results["combined"] = summarize_group(frame, member_probabilities, reported, member_draws, game_draws)
+    requested_metrics = summarize_predicted_group(
+        frame, member_probabilities, wld_values, reported, member_draws, game_draws
+    )
     compositions, counts = np.unique(np.sort(game_draws, axis=1), axis=0, return_counts=True)
     summary = {
         "schema": "personal-tcn-reported-bootstrap-v1", "status": "completed",
@@ -265,6 +457,7 @@ def main() -> int:
             ],
         },
         "groups": group_results,
+        "requestedReportedGroupMetrics": requested_metrics,
         "nodePredictions": str(args.node_output.resolve()), "nodePredictionsSha256": sha256_file(args.node_output),
         "dataValidation": validation,
         "timing": {
@@ -272,14 +465,32 @@ def main() -> int:
             "completedAtUtc": datetime.now(timezone.utc).isoformat(),
             "elapsedSeconds": time.perf_counter() - started_clock,
         },
+        "reportedSourceTimeLimitMs": reported_source_limits,
         "limitations": [
-            "The five-minute reported group contains one game.",
-            "The ten-minute game is an exploratory linear 0.5 clock-normalized estimate, not native ten-minute support.",
+            f"The reported group contains only {len(reported)} games.",
+            *(
+                ["At least one reported game was clock-normalized; those results are exploratory rather than native support for that time control."]
+                if any(source_by_game[game_id] != 300000 for game_id in reported)
+                else ["All reported games use the model's native five-minute time control; no clock scaling was applied."]
+            ),
             "Intervals quantify finite ensemble and whole-game sampling under the complete fixed personal control set; they are not cheating probabilities.",
         ],
     }
     args.summary_output.parent.mkdir(parents=True, exist_ok=True)
     args.summary_output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if args.control_calibration_output:
+        control_report = summarize_control_adaptation(
+            control_severity_targets, control_wld_targets, control_wld_losses, control_wld_applicable,
+            np.mean(control_base_classes, axis=0), np.mean(control_adapted_classes, axis=0),
+            np.mean(control_base_wld, axis=0), np.mean(control_adapted_wld, axis=0),
+            control_game_count,
+        )
+        control_report["personalEnsembleManifest"] = str(args.personal_ensemble_manifest.resolve())
+        control_report["personalEnsembleManifestSha256"] = sha256_file(args.personal_ensemble_manifest)
+        args.control_calibration_output.parent.mkdir(parents=True, exist_ok=True)
+        args.control_calibration_output.write_text(
+            json.dumps(control_report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

@@ -33,6 +33,8 @@ MODEL_READY_ARRAYS = {
     "raw_loss", "severity_class", "label_zero", "label_ge4", "label_ge10",
     "move_index", "source_ply_including_pass", "label_available",
     "has_consecutive_child", "child_continuity_ok", "same_side_after_move",
+    "current_score", "actual_move_score", "wld_class", "wld_loss",
+    "wld_label_available",
 }
 OQ_PROFILE_ARRAYS = {
     "oq_profile_raw_features", "oq_profile_features", "oq_profile_missing",
@@ -176,6 +178,8 @@ def validate_model_ready_npz(path: Path, expected_input_dim: int = 362,
             "move_index": shape, "source_ply_including_pass": shape,
             "label_available": shape, "has_consecutive_child": shape,
             "child_continuity_ok": shape, "same_side_after_move": shape,
+            "current_score": shape, "actual_move_score": shape,
+            "wld_class": shape, "wld_loss": shape, "wld_label_available": shape,
         }
         for name, expected in expected_shapes.items():
             if data[name].shape != expected:
@@ -205,6 +209,25 @@ def validate_model_ready_npz(path: Path, expected_input_dim: int = 362,
             raise ValueError("label_ge10 does not equal 1[disc_loss >= 10]")
         if np.any(label_ge10 > label_ge4):
             raise ValueError("label_ge10 cannot exceed label_ge4")
+        wld_available = data["wld_label_available"].astype(bool)
+        expected_wld_available = (
+            valid & data["label_available"].astype(bool)
+            & data["child_continuity_ok"].astype(bool)
+            & (data["global_placement_ply"] >= 39)
+        )
+        if not np.array_equal(wld_available, expected_wld_available):
+            raise ValueError("wld_label_available violates the pass-safe ply >= 39 contract")
+        wld_class = data["wld_class"][wld_available]
+        wld_loss = data["wld_loss"][wld_available]
+        if np.any((wld_class < 0) | (wld_class > 2)):
+            raise ValueError("wld_class must be in 0..2 on available nodes")
+        if not np.allclose(wld_loss, wld_class / 2.0, rtol=0, atol=1e-7):
+            raise ValueError("wld_loss must equal wld_class / 2")
+        before_rank = np.where(data["current_score"] > 0, 2, np.where(data["current_score"] < 0, 0, 1))
+        after_rank = np.where(data["actual_move_score"] > 0, 2, np.where(data["actual_move_score"] < 0, 0, 1))
+        expected_wld_class = np.maximum(0, before_rank - after_rank)
+        if not np.array_equal(wld_class, expected_wld_class[wld_available].astype(wld_class.dtype)):
+            raise ValueError("wld_class differs from the signed-score WLD rank drop")
         splits = data["split"].astype(str)
         game_ids = data["game_id"].astype(str)
         if splits.shape != (shape[0],) or game_ids.shape != (shape[0],):
@@ -324,6 +347,20 @@ def validate_model_ready_npz(path: Path, expected_input_dim: int = 362,
             "nodes": int(valid.sum()), "inputFeatures": int(x.shape[-1]),
             "preprocessingSha256": preprocessing_sha256, "inputPolicy": input_policy,
             "splits": {name: int(np.sum(splits == name)) for name in ("train", "validation", "test")},
+            "wld": {
+                "minimumGlobalPlacementPly": 39,
+                "labelledNodes": int(wld_available.sum()),
+                "classCounts": {
+                    name: int(np.sum(data["wld_class"][wld_available] == index))
+                    for index, name in enumerate((
+                        "class_no_wld_loss", "class_half_wld_loss", "class_full_wld_loss"
+                    ))
+                },
+                "splitCounts": {
+                    name: int(wld_available[splits == name].sum())
+                    for name in ("train", "validation", "test")
+                },
+            },
             "oqProfile": oq_profile_report,
         }
 

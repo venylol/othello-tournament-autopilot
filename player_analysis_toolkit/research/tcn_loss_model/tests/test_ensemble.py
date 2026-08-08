@@ -1,8 +1,9 @@
 import unittest
+from pathlib import Path
 
 import numpy as np
 
-from src.ensemble import deterministic_fixed_test_split
+from src.ensemble import deterministic_fixed_test_split, resolve_member_checkpoint
 
 
 class EnsembleSplitTests(unittest.TestCase):
@@ -17,6 +18,14 @@ class EnsembleSplitTests(unittest.TestCase):
         self.assertFalse(np.array_equal(first, other))
         self.assertEqual(first_summary, second_summary)
         self.assertEqual(set(first), {"train", "validation", "test"})
+
+    def test_member_checkpoint_is_resolved_relative_to_manifest(self):
+        manifest = Path("models/primary/ensemble_manifest.json")
+        expected = manifest.resolve().parent / "member_01.pt"
+        self.assertEqual(resolve_member_checkpoint(manifest, "member_01.pt"), expected)
+
+        absolute = Path.cwd().resolve() / "member_01.pt"
+        self.assertEqual(resolve_member_checkpoint(manifest, absolute), absolute)
 
 
 if __name__ == "__main__":

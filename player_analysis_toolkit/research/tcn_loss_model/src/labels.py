@@ -13,9 +13,23 @@ FORBIDDEN_MODEL_INPUT_COLUMNS = {
     "raw_loss", "disc_loss", "actual_loss", "has_consecutive_child", "same_side_after_move",
     "label_zero", "label_ge4", "label_ge10", "severity_class",
     "label_loss_ge4", "label_loss_ge10",
+    "current_score", "actual_move_score", "before_wld_rank", "after_wld_rank",
+    "wld_class", "wld_loss", "wld_label_available",
 }
 
 SEVERITY_CLASS_NAMES = ("class_zero", "class_1_3", "class_4_9", "class_ge10")
+WLD_CLASS_NAMES = ("class_no_wld_loss", "class_half_wld_loss", "class_full_wld_loss")
+WLD_MIN_GLOBAL_PLACEMENT_PLY = 39
+
+
+def score_to_wld_rank(values: pd.Series) -> pd.Series:
+    """Map an Egaroucid side-to-move score to Loss=0, Draw=1, Win=2."""
+    score = pd.to_numeric(values, errors="coerce")
+    result = pd.Series(np.nan, index=score.index, dtype="float64")
+    result.loc[score.lt(0)] = 0
+    result.loc[score.eq(0)] = 1
+    result.loc[score.gt(0)] = 2
+    return result
 
 
 def disc_loss_to_severity_class(values: pd.Series) -> pd.Series:
@@ -81,6 +95,12 @@ def generate_disc_loss_labels(frame: pd.DataFrame) -> pd.DataFrame:
     df["same_side_after_move"] = df["side_to_move"].eq(df["next_side_to_move"]).fillna(False)
     complete = df["hint6_1_score"].notna() & df["next_best_score"].notna()
     eligible = (~df["is_pass_record"]) & df["has_consecutive_child"] & complete
+    df["current_score"] = df["hint6_1_score"]
+    df["actual_move_score"] = np.where(
+        eligible,
+        np.where(df["same_side_after_move"], df["next_best_score"], -df["next_best_score"]),
+        np.nan,
+    )
     df["raw_loss"] = np.where(
         eligible,
         np.where(df["same_side_after_move"], df["hint6_1_score"] - df["next_best_score"], df["hint6_1_score"] + df["next_best_score"]),
@@ -92,6 +112,13 @@ def generate_disc_loss_labels(frame: pd.DataFrame) -> pd.DataFrame:
     df["label_ge4"] = np.where(df["disc_loss"].notna(), (df["disc_loss"] >= 4).astype("int8"), np.nan)
     df["label_ge10"] = np.where(df["disc_loss"].notna(), (df["disc_loss"] >= 10).astype("int8"), np.nan)
     df["label_available"] = (~df["is_pass_record"]) & df["disc_loss"].notna()
+    df["before_wld_rank"] = score_to_wld_rank(df["current_score"])
+    df["after_wld_rank"] = score_to_wld_rank(df["actual_move_score"])
+    df["wld_class"] = (df["before_wld_rank"] - df["after_wld_rank"]).clip(lower=0)
+    wld_eligible = eligible & df["global_placement_ply"].ge(WLD_MIN_GLOBAL_PLACEMENT_PLY)
+    df.loc[~wld_eligible, "wld_class"] = np.nan
+    df["wld_loss"] = df["wld_class"] / 2.0
+    df["wld_label_available"] = wld_eligible & df["wld_class"].notna()
     df["child_continuity_ok"] = df["has_consecutive_child"]
     df["child_transition"] = np.where(
         ~df["has_consecutive_child"], "",

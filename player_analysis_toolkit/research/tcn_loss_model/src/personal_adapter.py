@@ -18,6 +18,7 @@ from torch.nn import functional as F
 from .checkpoint import load_transferred_model, load_transferred_profile_model, sha256_file
 from .oq_profile_features import OQ_PROFILE_FEATURE_NAMES, profile_ablation_hash
 from .data_contract import validate_model_ready_npz
+from .ensemble import resolve_member_checkpoint
 from .feature_policy import INPUT_POLICY
 from .progress import atomic_write_json
 
@@ -75,6 +76,14 @@ def _per_game_mean(values: torch.Tensor, game_index: torch.Tensor, game_count: i
     return (sums / counts.clamp_min(1)).mean()
 
 
+def validate_personal_game_sets(control_ids: list[str], reported_ids: list[str]) -> None:
+    if not control_ids or not reported_ids or set(control_ids) & set(reported_ids):
+        raise ValueError(
+            "personal adaptation requires non-empty disjoint control and reported game sets; "
+            f"found {len(control_ids)} controls and {len(reported_ids)} reported games"
+        )
+
+
 def adapter_objective(
     hidden: torch.Tensor, base_logits: torch.Tensor, targets: torch.Tensor,
     game_index: torch.Tensor, game_count: int, delta_w: torch.Tensor, delta_b: torch.Tensor,
@@ -95,11 +104,68 @@ def adapter_objective(
             "deltaWL2": delta_w_l2, "deltaBL2": delta_b_l2}
 
 
+def wld_adapter_objective(
+    hidden: torch.Tensor, base_logits: torch.Tensor, targets: torch.Tensor,
+    game_index: torch.Tensor, game_count: int, delta_w: torch.Tensor, delta_b: torch.Tensor,
+    cfg: AdapterConfig,
+) -> dict[str, torch.Tensor]:
+    """Game-equal three-class WLD residual-adapter objective."""
+    return adapter_objective(
+        hidden, base_logits, targets, game_index, game_count, delta_w, delta_b, cfg
+    )
+
+
+def _fit_residual_adapter(
+    hidden: torch.Tensor, base_logits: torch.Tensor, targets: torch.Tensor,
+    game_index: torch.Tensor, game_count: int, class_count: int, cfg: AdapterConfig,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor], int, float]:
+    delta_w = torch.nn.Parameter(torch.zeros((hidden.shape[1], class_count), dtype=torch.float64))
+    delta_b = torch.nn.Parameter(torch.zeros(class_count, dtype=torch.float64))
+    base_probability = F.softmax(base_logits, dim=-1)
+    initial_probability = F.softmax(base_logits + hidden @ delta_w + delta_b, dim=-1)
+    identity_max_difference = float((initial_probability - base_probability).abs().max().item())
+    if identity_max_difference != 0.0:
+        raise AssertionError("zero-initialized personal adapter is not exactly identity")
+    initial = adapter_objective(
+        hidden, base_logits, targets, game_index, game_count, delta_w, delta_b, cfg
+    )
+    optimizer = torch.optim.LBFGS(
+        [delta_w, delta_b], max_iter=cfg.max_iter, line_search_fn=cfg.line_search_fn,
+        tolerance_grad=cfg.tolerance_grad, tolerance_change=cfg.tolerance_change,
+    )
+    evaluations = 0
+
+    def closure() -> torch.Tensor:
+        nonlocal evaluations
+        optimizer.zero_grad(set_to_none=True)
+        losses = adapter_objective(
+            hidden, base_logits, targets, game_index, game_count, delta_w, delta_b, cfg
+        )
+        losses["total"].backward()
+        evaluations += 1
+        return losses["total"]
+
+    optimizer.step(closure)
+    final = adapter_objective(
+        hidden, base_logits, targets, game_index, game_count, delta_w, delta_b, cfg
+    )
+    final_probability = F.softmax(base_logits + hidden @ delta_w + delta_b, dim=-1)
+    if not bool(torch.isfinite(final_probability).all()) or not bool(torch.allclose(
+        final_probability.sum(-1), torch.ones(len(final_probability), dtype=torch.float64), atol=1e-10
+    )):
+        raise ValueError("personal adapter produced invalid class probabilities")
+    return delta_w, delta_b, initial, final, evaluations, identity_max_difference
+
+
 @torch.no_grad()
 def _extract_control_representation(data_path: Path, base_checkpoint: Path, trained_checkpoint: Path):
     trained = torch.load(trained_checkpoint, map_location="cpu", weights_only=False)
-    use_oq_profile = trained.get("schema") == "tcn-loss-profile-checkpoint-v1"
-    if trained.get("schema") not in {"tcn-loss-checkpoint-v1", "tcn-loss-profile-checkpoint-v1"}:
+    schema = trained.get("schema")
+    use_oq_profile = schema in {"tcn-loss-profile-checkpoint-v1", "tcn-loss-profile-wld-checkpoint-v2"}
+    if schema not in {
+        "tcn-loss-checkpoint-v1", "tcn-loss-wld-checkpoint-v2",
+        "tcn-loss-profile-checkpoint-v1", "tcn-loss-profile-wld-checkpoint-v2",
+    }:
         raise ValueError("ensemble member checkpoint schema mismatch")
     if trained["manifest"].get("baseCheckpointSha256") != sha256_file(base_checkpoint):
         raise ValueError("ensemble member official checkpoint mismatch")
@@ -131,6 +197,7 @@ def _extract_control_representation(data_path: Path, base_checkpoint: Path, trai
         game_ids = data["game_id"].astype(str)[selected_games].tolist()
         reported = data["game_id"].astype(str)[splits == "test"].tolist()
         hidden_parts, logits_parts, target_parts, game_parts, counts = [], [], [], [], []
+        wld_hidden_parts, wld_logits_parts, wld_target_parts, wld_game_parts, wld_counts = [], [], [], [], []
         for local_game_index, source_game_index in enumerate(selected_games):
             sl = slice(source_game_index, source_game_index + 1)
             model_args = (
@@ -155,12 +222,25 @@ def _extract_control_representation(data_path: Path, base_checkpoint: Path, trai
                 target_parts.append(torch.from_numpy(data["severity_class"][sl])[mask.cpu()].long())
                 game_parts.append(torch.full((node_count,), local_game_index, dtype=torch.long))
             counts.append(node_count)
+            wld_mask = mask & torch.from_numpy(
+                data["wld_label_available"][sl]
+                & (data["global_placement_ply"][sl] >= 39)
+            ).bool().to(device)
+            wld_node_count = int(wld_mask.sum().item())
+            if wld_node_count:
+                wld_hidden_parts.append(output.severity_hidden[wld_mask].detach().cpu().double())
+                wld_logits_parts.append(output.wld_logits[wld_mask].detach().cpu().double())
+                wld_target_parts.append(torch.from_numpy(data["wld_class"][sl])[wld_mask.cpu()].long())
+                wld_game_parts.append(torch.full((wld_node_count,), local_game_index, dtype=torch.long))
+            wld_counts.append(wld_node_count)
     after_hash = _state_sha256(model)
     if before_hash != after_hash:
         raise AssertionError("frozen base model parameters changed during representation extraction")
     return (
         torch.cat(hidden_parts), torch.cat(logits_parts), torch.cat(target_parts), torch.cat(game_parts),
-        game_ids, reported, counts, before_hash, base_payload, use_oq_profile, profile_ablation,
+        torch.cat(wld_hidden_parts), torch.cat(wld_logits_parts), torch.cat(wld_target_parts),
+        torch.cat(wld_game_parts), game_ids, reported, counts, wld_counts, before_hash,
+        base_payload, use_oq_profile, profile_ablation,
     )
 
 
@@ -174,6 +254,7 @@ def train_adapter_member(data_path: Path, base_checkpoint: Path, trained_checkpo
     expected = {
         "member": member_index, "baseEnsembleCheckpointSha256": sha256_file(trained_checkpoint),
         "personalDataSha256": sha256_file(data_path), "configSha256": sha256_file(config_path),
+        "adapterSchema": "personal-tcn-adapter-v2",
     }
     if checkpoint_path.is_file() and manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -181,67 +262,64 @@ def train_adapter_member(data_path: Path, base_checkpoint: Path, trained_checkpo
             return {**existing, "personalCheckpoint": str(checkpoint_path.resolve()),
                     "personalCheckpointSha256": sha256_file(checkpoint_path)}
         raise ValueError(f"personal adapter member {member_index} manifest mismatch")
-    hidden, base_logits, targets, game_index, control_ids, reported_ids, node_counts, frozen_hash, base_payload, use_oq_profile, profile_ablation = _extract_control_representation(
+    (hidden, base_logits, targets, game_index, wld_hidden, wld_base_logits, wld_targets,
+     wld_game_index, control_ids, reported_ids, node_counts, wld_node_counts, frozen_hash,
+     base_payload, use_oq_profile, profile_ablation) = _extract_control_representation(
         data_path, base_checkpoint, trained_checkpoint
     )
-    if len(control_ids) != 28 or len(reported_ids) != 2 or set(control_ids) & set(reported_ids):
-        raise ValueError(f"expected 28 disjoint controls and 2 reported games, found {len(control_ids)} and {len(reported_ids)}")
+    validate_personal_game_sets(control_ids, reported_ids)
     if hidden.shape[1] != 64:
         raise ValueError(f"severity_hidden must have 64 features, got {hidden.shape}")
-    delta_w = torch.nn.Parameter(torch.zeros((64, 4), dtype=torch.float64))
-    delta_b = torch.nn.Parameter(torch.zeros(4, dtype=torch.float64))
-    initial_probability = F.softmax(base_logits + hidden @ delta_w + delta_b, dim=-1)
-    base_probability = F.softmax(base_logits, dim=-1)
-    identity_max_difference = float((initial_probability - base_probability).abs().max().item())
-    if identity_max_difference != 0.0:
-        raise AssertionError("zero-initialized personal adapter is not exactly identity")
-    initial = adapter_objective(hidden, base_logits, targets, game_index, len(control_ids), delta_w, delta_b, cfg)
-    optimizer = torch.optim.LBFGS(
-        [delta_w, delta_b], max_iter=cfg.max_iter, line_search_fn=cfg.line_search_fn,
-        tolerance_grad=cfg.tolerance_grad, tolerance_change=cfg.tolerance_change,
+    if wld_hidden.shape[1] != 64 or not len(wld_hidden):
+        raise ValueError(f"WLD adapter requires non-empty 64-feature hidden states, got {wld_hidden.shape}")
+    delta_w, delta_b, initial, final, evaluations, identity_max_difference = _fit_residual_adapter(
+        hidden, base_logits, targets, game_index, len(control_ids), 4, cfg
     )
-    evaluations = 0
-
-    def closure() -> torch.Tensor:
-        nonlocal evaluations
-        optimizer.zero_grad(set_to_none=True)
-        losses = adapter_objective(hidden, base_logits, targets, game_index, len(control_ids), delta_w, delta_b, cfg)
-        losses["total"].backward()
-        evaluations += 1
-        return losses["total"]
-
-    optimizer.step(closure)
-    final = adapter_objective(hidden, base_logits, targets, game_index, len(control_ids), delta_w, delta_b, cfg)
-    final_probability = F.softmax(base_logits + hidden @ delta_w + delta_b, dim=-1)
-    if not bool(torch.isfinite(final_probability).all()) or not bool(torch.allclose(final_probability.sum(-1), torch.ones(len(final_probability), dtype=torch.float64), atol=1e-10)):
-        raise ValueError("personal adapter produced invalid class probabilities")
+    wld_delta_w, wld_delta_b, wld_initial, wld_final, wld_evaluations, wld_identity_max_difference = _fit_residual_adapter(
+        wld_hidden, wld_base_logits, wld_targets, wld_game_index, len(control_ids), 3, cfg
+    )
     time_policy = ""
     with np.load(data_path, allow_pickle=False) as data:
         if "time_control_policy" in data.files:
             time_policy = str(data["time_control_policy"].item())
     manifest = {
-        "schema": "personal-tcn-adapter-manifest-v1", **expected,
+        "schema": "personal-tcn-adapter-manifest-v2", **expected,
         "baseEnsembleCheckpoint": str(trained_checkpoint.resolve()),
         "officialBaseCheckpoint": str(base_checkpoint.resolve()),
         "officialBaseCheckpointSha256": sha256_file(base_checkpoint),
         "controlGameIds": control_ids, "controlNodeCountsByGame": dict(zip(control_ids, node_counts, strict=True)),
+        "wldControlNodeCountsByGame": dict(zip(control_ids, wld_node_counts, strict=True)),
+        "wldApplicableNodeCount": int(sum(wld_node_counts)),
+        "wldApplicabilityPolicy": "wld_label_available and global_placement_ply >= 39",
         "zeroTargetNodeControlGameIds": [game_id for game_id, count in zip(control_ids, node_counts, strict=True) if count == 0],
-        "zeroTargetNodeConvention": "retained in the 28-record denominator with zero CE and KL contribution because the target player made no actual move",
+        "zeroTargetNodeConvention": "retained in the fixed control-game denominator with zero CE and KL contribution because the target player had no eligible node",
         "reportedExcludedGameIds": reported_ids, "reportedExclusionVerified": True,
-        "gameEqualWeighting": True, "adapterShape": {"deltaW": [64, 4], "deltaB": [4]},
-        "trainableParameterCount": 260, "zeroInitializationIdentityMaxAbsDifference": identity_max_difference,
+        "gameEqualWeighting": True,
+        "adapterShape": {
+            "severity": {"deltaW": [64, 4], "deltaB": [4]},
+            "wld": {"deltaW": [64, 3], "deltaB": [3]},
+        },
+        "trainableParameterCount": 455,
+        "zeroInitializationIdentityMaxAbsDifference": identity_max_difference,
+        "wldZeroInitializationIdentityMaxAbsDifference": wld_identity_max_difference,
         "allBaseParametersFrozen": True, "frozenBaseStateSha256BeforeAndAfter": frozen_hash,
         "modelVariant": "oq-profile" if use_oq_profile else "baseline",
         "oqProfileAblation": profile_ablation if use_oq_profile else "",
         "timeControlPolicy": time_policy, "optimizer": asdict(cfg), "optimizerEvaluations": evaluations,
         "initialControlLoss": {key: float(value.detach()) for key, value in initial.items()},
         "finalControlLoss": {key: float(value.detach()) for key, value in final.items()},
+        "initialWldControlLoss": {key: float(value.detach()) for key, value in wld_initial.items()},
+        "finalWldControlLoss": {key: float(value.detach()) for key, value in wld_final.items()},
         "averageKlDrift": float(final["gameEqualKlBaseToPersonal"].detach()),
+        "averageWldKlDrift": float(wld_final["gameEqualKlBaseToPersonal"].detach()),
+        "wldOptimizerEvaluations": wld_evaluations,
         "fixedProtocolNoPersonalValidation": True, "fixedProtocolNoReportedStopping": True,
         "elapsedSeconds": time.perf_counter() - started,
     }
     checkpoint = {
-        "schema": "personal-tcn-adapter-v1", "deltaW": delta_w.detach().cpu(), "deltaB": delta_b.detach().cpu(),
+        "schema": "personal-tcn-adapter-v2",
+        "deltaW": delta_w.detach().cpu(), "deltaB": delta_b.detach().cpu(),
+        "wldDeltaW": wld_delta_w.detach().cpu(), "wldDeltaB": wld_delta_b.detach().cpu(),
         "manifest": manifest,
     }
     _save(checkpoint_path, checkpoint)
@@ -263,15 +341,16 @@ def train_adapter_ensemble(data_path: Path, base_checkpoint: Path, ensemble_mani
     for source_member in members:
         index = int(source_member["member"])
         atomic_write_json(output_dir / "personal_ensemble_progress.json", {
-            "schema": "personal-tcn-adapter-ensemble-progress-v1", "status": "training",
+            "schema": "personal-tcn-adapter-ensemble-progress-v2", "status": "training",
             "currentMember": index, "memberCount": len(members), "completedMembers": len(results),
         })
         results.append(train_adapter_member(
-            data_path, base_checkpoint, Path(source_member["bestCheckpoint"]), config_path,
+            data_path, base_checkpoint,
+            resolve_member_checkpoint(ensemble_manifest_path, source_member["bestCheckpoint"]), config_path,
             output_dir / "members" / f"member_{index:02d}", index,
         ))
     manifest = {
-        "schema": "personal-tcn-adapter-ensemble-manifest-v1", "status": "completed",
+        "schema": "personal-tcn-adapter-ensemble-manifest-v2", "status": "completed",
         "baseEnsembleManifest": str(ensemble_manifest_path.resolve()),
         "baseEnsembleManifestSha256": sha256_file(ensemble_manifest_path),
         "personalData": str(data_path.resolve()), "personalDataSha256": sha256_file(data_path),
@@ -281,7 +360,7 @@ def train_adapter_ensemble(data_path: Path, base_checkpoint: Path, ensemble_mani
     }
     atomic_write_json(output_dir / "personal_ensemble_manifest.json", manifest)
     atomic_write_json(output_dir / "personal_ensemble_progress.json", {
-        "schema": "personal-tcn-adapter-ensemble-progress-v1", "status": "completed",
+        "schema": "personal-tcn-adapter-ensemble-progress-v2", "status": "completed",
         "memberCount": len(results), "completedMembers": len(results),
     })
     return manifest

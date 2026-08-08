@@ -120,6 +120,10 @@ def parser() -> argparse.ArgumentParser:
     profile_ensemble.add_argument("--fixed-split", action="store_true")
     profile_ensemble.add_argument("--warm-start-ensemble", type=Path)
     profile_ensemble.add_argument(
+        "--warm-start-checkpoint-name", choices=("best.pt", "latest.pt"), default="best.pt",
+        help="member checkpoint artifact used when warm-starting a new ensemble",
+    )
+    profile_ensemble.add_argument(
         "--extend-completed", action="store_true",
         help="resume completed members only when the new config solely extends fine-tuning epochs",
     )
@@ -152,12 +156,15 @@ def smoke_test(checkpoint_path: Path) -> dict:
         "ok": True, "device": "cpu", "batch": batch, "steps": steps,
         "inputFeatures": dim, "timeHeadShape": list(first.pred_time_log_seconds.shape),
         "severityClassHeadShape": list(first.severity_class_probabilities.shape),
+        "wldClassHeadShape": list(first.wld_probabilities.shape),
         "actualTimeDoesNotAffectTimeHead": True,
         "actualTimeAffectsOnlySeverityHead": (
             not torch.equal(first.probability_loss_ge4, second.probability_loss_ge4)
             or not torch.equal(first.probability_loss_ge10, second.probability_loss_ge10)
         ),
         "softmaxClassProbabilitySumIsOne": bool(torch.allclose(first.severity_class_probabilities.sum(dim=-1), torch.ones(batch, steps))),
+        "wldSoftmaxClassProbabilitySumIsOne": bool(torch.allclose(first.wld_probabilities.sum(dim=-1), torch.ones(batch, steps))),
+        "expectedWldLossInUnitInterval": bool(torch.all((first.expected_wld_loss >= 0) & (first.expected_wld_loss <= 1))),
         "probabilityGe10LeGe4": bool(torch.all(first.probability_loss_ge10 <= first.probability_loss_ge4)),
         "probabilityGe4LePositive": bool(torch.all(first.probability_loss_ge4 <= first.probability_loss_positive)),
         "optimizationSteps": 0,
@@ -172,6 +179,7 @@ def profile_smoke_test(checkpoint_path: Path, ablation: str, device_name: str = 
     profile, _ = load_transferred_profile_model(checkpoint_path, ablation)
     baseline.severity_context.load_state_dict(profile.severity_context.state_dict(), strict=True)
     baseline.severity_head.load_state_dict(profile.severity_head.state_dict(), strict=True)
+    baseline.wld_head.load_state_dict(profile.wld_head.state_dict(), strict=True)
     baseline.to(device).eval()
     profile.to(device).eval()
     batch, steps, dim = 2, 4, int(checkpoint["input_dim"])
@@ -189,6 +197,7 @@ def profile_smoke_test(checkpoint_path: Path, ablation: str, device_name: str = 
     exact = (
         torch.equal(base_output.pred_time_log_seconds, profile_output.pred_time_log_seconds)
         and torch.equal(base_output.severity_logits, profile_output.severity_logits)
+        and torch.equal(base_output.wld_logits, profile_output.wld_logits)
     )
     if not exact:
         raise AssertionError("zero-initialized profile branch is not exactly baseline-equivalent")
@@ -197,6 +206,7 @@ def profile_smoke_test(checkpoint_path: Path, ablation: str, device_name: str = 
         "strictOfficialBackboneLoad": True, "profileAblation": ablation,
         "profileInputShape": [batch, steps, 31], "profileMissingShape": [batch, steps, 31],
         "severityClassHeadShape": list(profile_output.severity_logits.shape),
+        "wldClassHeadShape": list(profile_output.wld_logits.shape),
         "thinkingTimeHeadShape": list(profile_output.pred_time_log_seconds.shape),
         "zeroInitializedExactBaselineIdentity": True,
         "thinkingTimeHeadUnconditioned": True,
@@ -238,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         view = {key: progress.get(key) for key in (
             "status", "stage", "epoch", "max_epochs", "validation_total_loss",
             "severity_classification_loss", "zero_loss_log_loss", "ge4_log_loss", "ge10_log_loss",
+            "wld_classification_loss", "wld_validation_metrics",
             "best_metric", "best_epoch", "learning_rate", "elapsed_seconds", "eta_seconds", "updated_at",
             "device", "gpu_name", "cuda_version", "base_checkpoint",
         )}
@@ -292,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
             extend_completed=getattr(args, "extend_completed", False),
             fixed_split=getattr(args, "fixed_split", False),
             warm_start_ensemble=getattr(args, "warm_start_ensemble", None),
+            warm_start_checkpoint_name=getattr(args, "warm_start_checkpoint_name", "best.pt"),
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0

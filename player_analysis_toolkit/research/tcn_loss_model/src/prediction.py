@@ -16,6 +16,9 @@ PREDICTION_COLUMNS = (
     "probability_loss_ge4", "probability_loss_ge10",
     "probability_class_zero", "probability_class_1_3",
     "probability_class_4_9", "probability_class_ge10",
+    "wld_applicable", "wld_label_available", "actual_wld_loss",
+    "probability_class_no_wld_loss", "probability_class_half_wld_loss",
+    "probability_class_full_wld_loss", "probability_wld_any", "expected_wld_loss",
     "label_available", "is_pass_record", "has_consecutive_child",
     "child_continuity_ok", "same_side_after_move", "raw_loss",
 )
@@ -45,6 +48,17 @@ def prediction_frame(metadata: pd.DataFrame, output: ModelOutput, actual_loss: t
     class_probabilities = output.severity_class_probabilities.detach().cpu().numpy().reshape(-1, 4)[valid]
     for index, name in enumerate(("zero", "1_3", "4_9", "ge10")):
         result[f"probability_class_{name}"] = class_probabilities[:, index]
+    applicable = result["global_placement_ply"].to_numpy() >= 39
+    result["wld_applicable"] = applicable
+    if "wld_label_available" not in result:
+        result["wld_label_available"] = False
+    if "actual_wld_loss" not in result:
+        result["actual_wld_loss"] = np.nan
+    wld = output.wld_probabilities.detach().cpu().numpy().reshape(-1, 3)[valid]
+    for index, name in enumerate(("no_wld_loss", "half_wld_loss", "full_wld_loss")):
+        result[f"probability_class_{name}"] = np.where(applicable, wld[:, index], np.nan)
+    result["probability_wld_any"] = np.where(applicable, wld[:, 1] + wld[:, 2], np.nan)
+    result["expected_wld_loss"] = np.where(applicable, 0.5 * wld[:, 1] + wld[:, 2], np.nan)
     missing = [column for column in PREDICTION_COLUMNS if column not in result]
     if missing:
         raise ValueError(f"prediction metadata missing required audit fields: {missing}")

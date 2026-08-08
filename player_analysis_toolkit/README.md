@@ -6,8 +6,9 @@
 所有文本输入输出均使用 UTF-8。脚本不会删除输入或既有结果文件；输出路径
 如果需要覆盖，应由使用者先明确处理。
 
-大型公开训练数据和模型不提交到 Git；版本化下载与校验方式见
-[`DATASETS.md`](DATASETS.md)。
+大型公开训练数据不提交到 Git；版本化下载与校验方式见
+[`DATASETS.md`](DATASETS.md)。当前 12-member 主模型作为例外，直接版本化在
+`research/tcn_loss_model/models/primary_wld_ensemble12/`，不含个人适配权重。
 
 ## 文件
 
@@ -392,6 +393,7 @@ python scripts/analysis/player_analysis.py loss `
   --reported-game-id "reported_game_2" `
   --bootstrap 10000 `
   --model-bootstrap 1000 `
+  --wld-from-ply 39 `
   --output "C:\path\output\loss-analysis.json"
 ```
 
@@ -405,6 +407,33 @@ python scripts/analysis/player_analysis.py loss `
 每个有效子损节点都有合法 `[0,1]` 概率时，JSON/报告才输出预计节点数、实际减
 预计节点数，以及按节点或整局归一的实际发生减预测概率；否则明确输出
 “模型概率不可用”，不会用 0、空字符串或虚构值代替。
+
+`--wld-from-ply 39` 是可选项；省略时输出与原有 schema 和字段完全一致。启用后，
+以排除 pass 的全局实际落子序号为边界，包含第 39 手，只新增每局及当前汇总棋手的
+`engine_wld_loss_total_from_ply39`。不会新增逐着 WLD、变化前后等级、平均值或
+逆转次数。Egaroucid 的 book、level、threads、hash 等现有参数保持不变。
+
+直接运行正常引擎包装器时，也可在原命令后加 `--wld-from-ply 39`。引擎完成后会
+在新的输出目录写入 `engine_wld_loss_totals_from_ply39.json`、按局/棋手 CSV 和
+按棋手 CSV；参数不会传给 Egaroucid，也不会改变其搜索配置。
+
+模型预测 CSV/JSON 可用通用消费入口汇总。启用 WLD 时，输入必须包含
+`expected_wld_loss`、`wld_applicable`、`global_placement_ply`、`game_id`，并至少
+包含 `player_id` 或 `side`；缺字段会直接报错：
+
+```powershell
+python scripts/analysis/player_analysis.py model-wld `
+  --predictions "C:\path\node-predictions.csv" `
+  --wld-from-ply 39 `
+  --output "C:\path\predicted-wld.json" `
+  --csv-output "C:\path\predicted-wld-by-game-player.csv" `
+  --player-csv-output "C:\path\predicted-wld-by-player.csv" `
+  --markdown-output "C:\path\predicted-wld.md"
+```
+
+该入口只对 `wld_applicable=true` 且 `global_placement_ply >= 39` 的行求和，字段为
+`predicted_expected_wld_loss_total_from_ply39`。生成的 Markdown 可继续交给第 10
+节的 PDF 渲染命令。
 
 阶段调查脚本的诊断图默认同时包含 `loss_ge4_rate` 与 `loss_ge10_rate`，也可
 重复使用 `--plot-metric loss_ge4_rate --plot-metric loss_ge10_rate` 选择要绘制
@@ -469,6 +498,7 @@ python scripts/analysis/player_analysis.py reference --config reference-config.j
   "bootstrap": 10000,
   "modelBootstrap": 1000,
   "seed": 20260801,
+  "wldFromPly": 39,
   "referenceConfig": "C:\\path\\reference-config.json"
 }
 ```
@@ -477,7 +507,20 @@ python scripts/analysis/player_analysis.py reference --config reference-config.j
 python scripts/analysis/player_analysis.py run-all --config run-config.json
 ```
 
-`referenceConfig` 可以省略。
+`referenceConfig` 和 `wldFromPly` 都可以省略。`reference`、`offbook-stats`、
+`offbook-model` 的配置也可使用 `"wldFromPly": 39`；后两者还接受同名 CLI
+`--wld-from-ply 39` 覆盖/启用该选项。
+
+全量 hint 阶段调查可使用：
+
+```powershell
+python scripts/analysis/analyze_oq_loss_phase_boundaries.py `
+  --wld-from-ply 39 `
+  --output-dir "C:\path\new-investigation-output"
+```
+
+该脚本使用已有 level-18 hint-6 分数和原有 book 状态，不改变阶段拟合或搜索参数；
+只额外生成按局/棋手与按棋手的 WLD 总和 CSV/JSON。
 
 ## 10. 生成 GitHub 风格 PDF
 

@@ -412,6 +412,11 @@ def make_model_ready_arrays(
         "has_consecutive_child": np.zeros(shape, dtype=bool),
         "child_continuity_ok": np.zeros(shape, dtype=bool),
         "same_side_after_move": np.zeros(shape, dtype=bool),
+        "current_score": np.zeros(shape, dtype=np.float32),
+        "actual_move_score": np.zeros(shape, dtype=np.float32),
+        "wld_class": np.zeros(shape, dtype=np.int8),
+        "wld_loss": np.zeros(shape, dtype=np.float32),
+        "wld_label_available": np.zeros(shape, dtype=bool),
     }
     row_positions = np.arange(len(frame), dtype=np.int64)
     rows_by_game = frame.groupby("game_id", sort=False).indices
@@ -444,6 +449,16 @@ def make_model_ready_arrays(
         ).to_numpy(np.int16)
         for name in ("has_consecutive_child", "child_continuity_ok", "same_side_after_move"):
             arrays[name][game_index, :length] = view[name].astype(bool).to_numpy()
+        for name in ("current_score", "actual_move_score", "wld_loss"):
+            arrays[name][game_index, :length] = (
+                pd.to_numeric(view[name], errors="coerce").fillna(0).to_numpy(np.float32)
+            )
+        arrays["wld_class"][game_index, :length] = (
+            pd.to_numeric(view["wld_class"], errors="coerce").fillna(0).to_numpy(np.int8)
+        )
+        arrays["wld_label_available"][game_index, :length] = (
+            view["wld_label_available"].astype(bool).to_numpy()
+        )
 
     board_tokens, board_move_tokens = board_context.make_board_context_sequences(frame, games, workers)
     current_hint_tokens = board_tcn.make_current_hint_move_sequences(frame, games, 6)

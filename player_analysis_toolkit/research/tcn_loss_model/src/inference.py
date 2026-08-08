@@ -1,4 +1,4 @@
-"""Explicit inference for a trained four-class checkpoint."""
+"""Explicit inference for trained severity/time/WLD checkpoints."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ import numpy as np
 import pandas as pd
 import torch
 
-from .checkpoint import load_checkpoint_payload, load_transferred_model, load_transferred_profile_model, sha256_file
+from .checkpoint import (
+    load_checkpoint_payload, load_trained_state_with_wld_migration,
+    load_transferred_model, load_transferred_profile_model, sha256_file,
+)
 from .data_contract import validate_model_ready_npz
 from .oq_profile_features import OQ_PROFILE_FEATURE_NAMES, profile_ablation_hash
 
@@ -28,7 +31,7 @@ def predict_to_csv(data_path: Path, trained_checkpoint: Path, base_checkpoint: P
         raise RuntimeError("requested CUDA inference but torch.cuda.is_available() is false")
     base_payload = load_checkpoint_payload(base_checkpoint)
     trained = torch.load(trained_checkpoint, map_location="cpu", weights_only=False)
-    expected_schema = "tcn-loss-profile-checkpoint-v1" if use_oq_profile else "tcn-loss-checkpoint-v1"
+    expected_schema = "tcn-loss-profile-wld-checkpoint-v2" if use_oq_profile else "tcn-loss-wld-checkpoint-v2"
     if trained.get("schema") != expected_schema:
         raise ValueError(f"trained checkpoint schema mismatch: expected {expected_schema!r}")
     trained_manifest = trained["manifest"]
@@ -56,13 +59,16 @@ def predict_to_csv(data_path: Path, trained_checkpoint: Path, base_checkpoint: P
         model, _ = load_transferred_profile_model(base_checkpoint, profile_ablation)
     else:
         model, _ = load_transferred_model(base_checkpoint)
-    model.load_state_dict(trained["modelStateDict"], strict=True)
+    migration = load_trained_state_with_wld_migration(model, trained["modelStateDict"])
+    if migration["migratedLegacyCheckpoint"]:
+        raise ValueError("legacy checkpoint has an untrained WLD head and cannot produce calibrated WLD inference")
     device = torch.device(device_name)
     model.to(device).eval()
     with np.load(data_path, allow_pickle=False) as data:
         games, steps = data["X"].shape[:2]
         class_probabilities = np.zeros((games, steps, 4), dtype=np.float32)
         predicted_time_log = np.zeros((games, steps), dtype=np.float32)
+        wld_probabilities = np.zeros((games, steps, 3), dtype=np.float32)
         for start in range(0, games, batch_size):
             stop = min(start + batch_size, games)
             sl = slice(start, stop)
@@ -85,6 +91,7 @@ def predict_to_csv(data_path: Path, trained_checkpoint: Path, base_checkpoint: P
                 output = model(*model_args)
             class_probabilities[sl] = output.severity_class_probabilities.cpu().numpy()
             predicted_time_log[sl] = output.pred_time_log_seconds.cpu().numpy()
+            wld_probabilities[sl] = output.wld_probabilities.cpu().numpy()
         valid = data["mask"].astype(bool)
         game_grid = np.broadcast_to(data["game_id"][:, None], (games, steps))
         split_grid = np.broadcast_to(data["split"][:, None], (games, steps))
@@ -92,6 +99,9 @@ def predict_to_csv(data_path: Path, trained_checkpoint: Path, base_checkpoint: P
         p_positive = 1 - p_zero
         p_ge4 = class_probabilities[..., 2] + class_probabilities[..., 3]
         p_ge10 = class_probabilities[..., 3]
+        probability_wld_any = wld_probabilities[..., 1] + wld_probabilities[..., 2]
+        expected_wld_loss = 0.5 * wld_probabilities[..., 1] + wld_probabilities[..., 2]
+        applicable = data["global_placement_ply"] >= 39
         if np.any(p_ge10 > p_ge4 + 1e-6) or np.any(p_ge4 > p_positive + 1e-6):
             raise AssertionError("inference probability monotonicity failure")
         columns = {
@@ -111,6 +121,14 @@ def predict_to_csv(data_path: Path, trained_checkpoint: Path, base_checkpoint: P
             "probability_class_1_3": class_probabilities[..., 1][valid],
             "probability_class_4_9": class_probabilities[..., 2][valid],
             "probability_class_ge10": class_probabilities[..., 3][valid],
+            "wld_applicable": applicable[valid],
+            "wld_label_available": data["wld_label_available"][valid],
+            "actual_wld_loss": np.where(data["wld_label_available"], data["wld_loss"], np.nan)[valid],
+            "probability_class_no_wld_loss": np.where(applicable, wld_probabilities[..., 0], np.nan)[valid],
+            "probability_class_half_wld_loss": np.where(applicable, wld_probabilities[..., 1], np.nan)[valid],
+            "probability_class_full_wld_loss": np.where(applicable, wld_probabilities[..., 2], np.nan)[valid],
+            "probability_wld_any": np.where(applicable, probability_wld_any, np.nan)[valid],
+            "expected_wld_loss": np.where(applicable, expected_wld_loss, np.nan)[valid],
             "label_available": data["label_available"][valid],
             "has_consecutive_child": data["has_consecutive_child"][valid],
             "child_continuity_ok": data["child_continuity_ok"][valid],
@@ -132,5 +150,6 @@ def predict_to_csv(data_path: Path, trained_checkpoint: Path, base_checkpoint: P
         "ok": True, "rows": int(valid.sum()), "output": str(output_path.resolve()),
         "modelVariant": "oq-profile" if use_oq_profile else "baseline",
         "oqProfileAblation": profile_ablation if use_oq_profile else "",
+        "wldMinimumGlobalPlacementPlyInclusive": 39,
         "data": validation,
     }

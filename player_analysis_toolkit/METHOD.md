@@ -59,6 +59,40 @@ OQ `position.moves` 中包含三类事件：
 再用 smearing correction 还原到原尺度。两部分均控制线性 ply、执棋颜色
 和是否为比赛局。区间通过整局聚类 bootstrap 获得。
 
+### 3.5 从实际落子 ply 39 起的 WLD 损失总和（可选）
+
+该指标只在 CLI 使用 `--wld-from-ply 39`，或配置使用 `"wldFromPly": 39` 时
+启用；省略时保持旧输出不变。边界坐标是排除显式 pass 和其他非坐标事件后的
+全局实际落子序号，条件为 `global_placement_ply >= 39`，因此第 39 手包含在内。
+`move_index`、包含 pass 的源 `ply` 和 `finalStatus` 都不作为该指标的边界或标签。
+
+每个实际落子复用调查链路已有的落子前最佳分数与落子后的局面最佳分数。落子后
+分数先转回刚落子一方视角：
+
+```text
+正常换边：actual_move_score = -next_best_score
+落子后对手 pass、同一方继续：actual_move_score = next_best_score
+```
+
+分数大于 0、等于 0、小于 0 分别映射为 Win=2、Draw=1、Loss=0，再计算：
+
+```text
+drop = max(0, before_rank - after_rank)
+wld_loss = drop / 2
+```
+
+所以 Win→Draw 与 Draw→Loss 均为 0.5，Win→Loss 为 1；不变、改善和其他非恶化
+变化为 0。引擎实际总和字段是 `engine_wld_loss_total_from_ply39`。模型预测输入
+只对 `wld_applicable=true` 且处于边界内的 `expected_wld_loss` 求和，字段是
+`predicted_expected_wld_loss_total_from_ply39`。模型输入缺少 `game_id`、
+`global_placement_ply`、`wld_applicable`、`expected_wld_loss` 或 mover 身份
+`player_id/side` 时明确失败，不补零。
+
+常规 JSON、CSV、Markdown/PDF 和终端摘要只展示每局/棋手及棋手汇总总和；逐着
+WLD、变化前后 W/L/D、平均每着 WLD、逆转着数和发生率不对外展示。玩家汇总只
+累计该玩家本人落子。该可选汇总不修改 Egaroucid 的 book、level 或其他现有分析
+参数。
+
 ## 四、用时趋势
 
 用时分析使用原始毫秒，不做对数变换。基线只使用与被报告局同色的个人对照

@@ -20,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from player_analysis_toolkit.analysis_core import (
+    ENGINE_WLD_TOTAL_FIELD,
     fit_mean_time_curve,
     load_engine_games,
     target_engine_games,
@@ -381,6 +382,17 @@ def reported_game_rows(
                 ),
                 "offbookLossAtLeast10Rate": required_number(
                     offbook, "lossAtLeast10Rate", f"reported {game_id} postOffBookInclusive"
+                ),
+                **(
+                    {
+                        "engineWldLossTotalFromPly39": required_number(
+                            full,
+                            ENGINE_WLD_TOTAL_FIELD,
+                            f"reported {game_id} fullGame",
+                        )
+                    }
+                    if ENGINE_WLD_TOTAL_FIELD in full
+                    else {}
                 ),
             }
         )
@@ -754,8 +766,7 @@ def build_sections(
         ],
     )
 
-    reported_table = markdown_table(
-        [
+    reported_headers = [
             "gameId",
             "整局着手",
             "整局总子损",
@@ -771,8 +782,13 @@ def build_sections(
             "脱谱后子损≥10数",
             "脱谱后子损≥4比例",
             "脱谱后子损≥10比例",
-        ],
-        [
+        ]
+    show_wld = any("engineWldLossTotalFromPly39" in row for row in loss_rows)
+    if show_wld:
+        if not all("engineWldLossTotalFromPly39" in row for row in loss_rows):
+            raise ChecklistError("reported game WLD totals are only partially available")
+        reported_headers.append("从 ply 39 起 WLD 损失加权总和")
+    reported_values = [
             [
                 f"`{row['gameId']}`",
                 row["fullMoveCount"],
@@ -789,10 +805,15 @@ def build_sections(
                 row["offbookLossAtLeast10Count"],
                 fmt_percent(row["offbookLossAtLeast4Rate"]),
                 fmt_percent(row["offbookLossAtLeast10Rate"]),
+                *(
+                    [fmt_number(row["engineWldLossTotalFromPly39"], 3)]
+                    if show_wld
+                    else []
+                ),
             ]
             for row in loss_rows
-        ],
-    )
+        ]
+    reported_table = markdown_table(reported_headers, reported_values)
 
     control_table = render_loss_control_table(controls)
 

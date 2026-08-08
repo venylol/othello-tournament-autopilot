@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
 TOOLKIT_DIR = Path(__file__).resolve().parents[2]
+SRC_ROOT = TOOLKIT_DIR / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from player_analysis_toolkit.analysis_core import (
+    engine_wld_totals_by_game_player,
+    load_engine_games,
+    write_csv,
+    write_json,
+)
+
+
 PROJECT_ROOT = TOOLKIT_DIR.parent
 DEFAULT_RUNNER = PROJECT_ROOT / "wechat-decrypt" / "agent_egaroucid_analysis.py"
 DEFAULT_PYTHON = PROJECT_ROOT / "wechat-decrypt" / ".venv" / "Scripts" / "python.exe"
@@ -39,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hash", type=int, default=26)
     parser.add_argument("--book", default="")
     parser.add_argument("--node-restart", type=int, default=1000)
+    parser.add_argument(
+        "--wld-from-ply",
+        type=int,
+        choices=(39,),
+        help="after engine completion, write per-game/player WLD totals from inclusive pass-free ply 39",
+    )
     return parser
 
 
@@ -86,6 +106,20 @@ def main(argv: list[str] | None = None) -> int:
     environment["PYTHONUTF8"] = "1"
     environment["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(command, env=environment, check=False)
+    if completed.returncode == 0 and args.wld_from_ply is not None:
+        totals = engine_wld_totals_by_game_player(
+            load_engine_games(output_dir), args.wld_from_ply
+        )
+        write_json(output_dir / "engine_wld_loss_totals_from_ply39.json", totals)
+        write_csv(
+            output_dir / "engine_wld_loss_totals_by_game_player_from_ply39.csv",
+            totals["gamePlayerTotals"],
+        )
+        write_csv(
+            output_dir / "engine_wld_loss_totals_by_player_from_ply39.csv",
+            totals["playerTotals"],
+        )
+        print(json.dumps(totals, ensure_ascii=False, indent=2))
     return int(completed.returncode)
 
 

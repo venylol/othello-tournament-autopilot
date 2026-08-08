@@ -82,3 +82,43 @@ class LabelTests(unittest.TestCase):
   def test_four_class_boundaries_are_exact(self):
     losses = pd.Series([0, 1, 3, 4, 9, 10])
     self.assertEqual(disc_loss_to_severity_class(losses).astype(int).tolist(), [0, 1, 1, 2, 2, 3])
+
+  def _wld_transition(self, before, next_score):
+    rows = [
+        {"game_id": "w", "move_index": i, "ply": i + 1,
+         "side_to_move": "black" if i % 2 == 0 else "white",
+         "actual_move": "d3", "hint6_1_score": 0}
+        for i in range(40)
+    ]
+    rows[38]["hint6_1_score"] = before
+    rows[39]["hint6_1_score"] = next_score
+    return generate_disc_loss_labels(pd.DataFrame(rows))
+
+  def test_wld_ply_boundary_and_rank_drops(self):
+    cases = ((1, 0, 1, 0.5), (0, 1, 1, 0.5), (1, 1, 2, 1.0), (-1, -1, 0, 0.0))
+    for before, next_score, expected_class, expected_loss in cases:
+      with self.subTest(before=before, next=next_score):
+        labelled = self._wld_transition(before, next_score)
+        self.assertFalse(bool(labelled.loc[37, "wld_label_available"]))
+        self.assertTrue(bool(labelled.loc[38, "wld_label_available"]))
+        self.assertEqual(int(labelled.loc[38, "wld_class"]), expected_class)
+        self.assertEqual(float(labelled.loc[38, "wld_loss"]), expected_loss)
+
+  def test_wld_normal_turn_flips_and_pass_same_side_does_not(self):
+    normal = self._wld_transition(2, 3)
+    self.assertEqual(float(normal.loc[38, "actual_move_score"]), -3.0)
+    rows = [
+        {"game_id": "p", "move_index": i, "ply": i + 1,
+         "side_to_move": "black" if i % 2 == 0 else "white",
+         "actual_move": "d3", "hint6_1_score": 0}
+        for i in range(39)
+    ]
+    rows[38]["side_to_move"] = "black"
+    rows[38]["hint6_1_score"] = 2
+    rows.extend([
+        {"game_id": "p", "move_index": 39, "ply": 40, "side_to_move": "white", "actual_move": "-", "hint6_1_score": None},
+        {"game_id": "p", "move_index": 40, "ply": 41, "side_to_move": "black", "actual_move": "c4", "hint6_1_score": -3},
+    ])
+    passed = generate_disc_loss_labels(pd.DataFrame(rows))
+    self.assertTrue(bool(passed.loc[38, "same_side_after_move"]))
+    self.assertEqual(float(passed.loc[38, "actual_move_score"]), -3.0)

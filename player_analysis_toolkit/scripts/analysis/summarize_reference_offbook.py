@@ -5,8 +5,21 @@ import csv
 import hashlib
 import json
 import statistics
+import sys
 from pathlib import Path
 from typing import Any
+
+
+TOOLKIT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = TOOLKIT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from player_analysis_toolkit.analysis_core import (
+    ENGINE_WLD_TOTAL_FIELD,
+    engine_wld_loss_total,
+    target_engine_games,
+)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -76,6 +89,7 @@ def main() -> int:
     parser.add_argument("--reported-config", required=True)
     parser.add_argument("--reported-engine-dir", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--wld-from-ply", type=int, choices=(39,))
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir).resolve()
@@ -245,8 +259,7 @@ def main() -> int:
         node = next((node for node in engine["nodes"] if int(node["ply"]) == int(record["offBookPly"])), None)
         if node is None:
             raise ValueError(f"reported anchor missing from engine nodes: {gid}")
-        comparisons.append(
-            {
+        comparison = {
                 "gameId": gid,
                 "opening": opening,
                 "opponentName": meta.get("opponentName"),
@@ -267,7 +280,14 @@ def main() -> int:
                     "thinkingTimeMs": rounded(float(record["thinkingTimeMs"]) - float(statistics.median(times))),
                 },
             }
-        )
+        if args.wld_from_ply is not None:
+            target_games = target_engine_games([engine], str(reported_doc["account"]))
+            if len(target_games) != 1:
+                raise ValueError(f"could not isolate target-player engine nodes for {gid}")
+            comparison[ENGINE_WLD_TOTAL_FIELD] = engine_wld_loss_total(
+                target_games, args.wld_from_ply
+            )
+        comparisons.append(comparison)
 
     comparison_output = {
         "schema": "oq-reported-vs-opening-reference-summary-v1",
@@ -275,6 +295,11 @@ def main() -> int:
         "referenceOpenings": opening_summaries,
         "reportedComparisons": comparisons,
     }
+    if args.wld_from_ply is not None:
+        comparison_output["wldFromPly"] = args.wld_from_ply
+        comparison_output[ENGINE_WLD_TOTAL_FIELD] = rounded(
+            sum(float(item[ENGINE_WLD_TOTAL_FIELD]) for item in comparisons), 6
+        )
     write_new_json(output_dir / "reported-vs-reference-summary.json", comparison_output)
 
     report_lines = [
@@ -305,6 +330,11 @@ def main() -> int:
                 "",
                 f"- 对手：{item['opponentName']}（{item['opponentAccount']}）；目标账号 {item['targetAccount']} 执白。",
                 f"- 人工锚点：ply {item['offBookPly']}，{item['move']}，{item['thinkingTimeMs']}ms；EG子损 {item['engineLossClipped']}。",
+                *(
+                    [f"- 从实际落子 ply 39（含）起的 WLD 损失加权总和：{item[ENGINE_WLD_TOTAL_FIELD]}。"]
+                    if args.wld_from_ply is not None
+                    else []
+                ),
                 f"- 在该开局19个可定锚参照局中，offBookPly 小于/等于该局的是 {ply_pos['lessThan']}/{ply_pos['equal']} 局，含等号经验位置 {ply_pos['inclusiveEmpiricalPercentile']}%。",
                 f"- 锚点用时小于/等于该局的是 {time_pos['lessThan']}/{time_pos['equal']} 局，含等号经验位置 {time_pos['inclusiveEmpiricalPercentile']}%。",
                 f"- 相对该参照中位数：锚点晚 {item['differenceFromReferenceMedian']['offBookPly']} ply，锚点用时差 {item['differenceFromReferenceMedian']['thinkingTimeMs']}ms。",
@@ -313,7 +343,10 @@ def main() -> int:
             ]
         )
     write_new_text(output_dir / "reported-vs-reference-summary.md", "\n".join(report_lines))
-    print(json.dumps({"ok": True, "rows": len(rows), "comparisons": len(comparisons)}, indent=2))
+    terminal = {"ok": True, "rows": len(rows), "comparisons": len(comparisons)}
+    if args.wld_from_ply is not None:
+        terminal[ENGINE_WLD_TOTAL_FIELD] = comparison_output[ENGINE_WLD_TOTAL_FIELD]
+    print(json.dumps(terminal, ensure_ascii=False, indent=2))
     return 0
 
 

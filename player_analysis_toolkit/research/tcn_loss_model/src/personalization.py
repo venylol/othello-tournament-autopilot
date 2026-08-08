@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 
 from .checkpoint import load_transferred_model, sha256_file
 from .data_contract import validate_model_ready_npz
+from .ensemble import resolve_member_checkpoint
 from .feature_policy import INPUT_POLICY
 from .progress import atomic_write_json
 from .training import SequenceDataset, _model_output, _move
@@ -194,7 +195,8 @@ def fine_tune_ensemble(data_path: Path, base_checkpoint: Path, ensemble_manifest
             "currentMember": index, "memberCount": len(ensemble["members"]), "completedMembers": len(members),
         })
         members.append(fine_tune_member(
-            data_path, base_checkpoint, Path(member["bestCheckpoint"]), config_path,
+            data_path, base_checkpoint,
+            resolve_member_checkpoint(ensemble_manifest_path, member["bestCheckpoint"]), config_path,
             output_dir / "members" / f"member_{index:02d}", index,
         ))
     manifest = {

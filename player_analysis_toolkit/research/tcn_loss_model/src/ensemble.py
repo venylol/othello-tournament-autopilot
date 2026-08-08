@@ -15,6 +15,12 @@ from .progress import atomic_write_json
 from .training import TrainingConfig, train_cuda
 
 
+def resolve_member_checkpoint(manifest_path: Path, checkpoint: str | Path) -> Path:
+    """Resolve a member checkpoint, including portable manifest-relative paths."""
+    path = Path(checkpoint)
+    return path if path.is_absolute() else manifest_path.resolve().parent / path
+
+
 def _ids_hash(game_ids: Iterable[str]) -> str:
     body = "\n".join(sorted(map(str, game_ids))).encode("utf-8")
     return hashlib.sha256(body).hexdigest()
@@ -94,6 +100,7 @@ def train_ensemble(
     extend_completed: bool = False,
     fixed_split: bool = False,
     warm_start_ensemble: Path | None = None,
+    warm_start_checkpoint_name: str = "best.pt",
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     progress_path = output_dir / "ensemble_progress.json"
@@ -103,6 +110,8 @@ def train_ensemble(
     target_max_epochs = TrainingConfig.load(config_path).head_epochs + TrainingConfig.load(config_path).fine_tune_epochs
     if warm_start_ensemble is not None and not use_oq_profile:
         raise ValueError("warm-start ensemble requires profile training")
+    if warm_start_checkpoint_name not in {"best.pt", "latest.pt"}:
+        raise ValueError("warm_start_checkpoint_name must be 'best.pt' or 'latest.pt'")
     for index, seed in enumerate(seeds, start=1):
         member_dir = output_dir / "members" / f"member_{index:02d}_seed_{seed}"
         member_dir.mkdir(parents=True, exist_ok=True)
@@ -147,7 +156,7 @@ def train_ensemble(
             initial_profile_checkpoint = None
             if warm_start_ensemble is not None:
                 initial_profile_checkpoint = (
-                    warm_start_ensemble / "members" / f"member_{index:02d}_seed_{seed}" / "best.pt"
+                    warm_start_ensemble / "members" / f"member_{index:02d}_seed_{seed}" / warm_start_checkpoint_name
                 )
                 if not initial_profile_checkpoint.is_file():
                     raise FileNotFoundError(f"warm-start member checkpoint is missing: {initial_profile_checkpoint}")
@@ -161,16 +170,23 @@ def train_ensemble(
         run_manifest = json.loads((member_dir / "run_manifest.json").read_text(encoding="utf-8"))
         test_metrics = json.loads((member_dir / "test_metrics.json").read_text(encoding="utf-8"))
         member_progress = json.loads((member_dir / "progress.json").read_text(encoding="utf-8"))
-        members.append({
+        member_record = {
             "member": index, "seed": seed, "split": split_manifest,
             "bestCheckpoint": str((member_dir / "best.pt").resolve()),
             "bestCheckpointSha256": sha256_file(member_dir / "best.pt"),
             "bestEpoch": member_progress["best_epoch"],
-            "bestValidationTotalLoss": member_progress["best_metric"],
+            "bestSemanticEpoch": int(run_manifest.get("warmStartEpoch", 0)) + int(member_progress["best_epoch"]),
+            "selectionMetric": run_manifest.get("selectionMetric", "validation_total_loss"),
+            "bestValidationMetric": member_progress["best_metric"],
             "testMetrics": test_metrics,
             "runManifest": run_manifest,
             "trainingConfig": asdict(cfg),
-        })
+        }
+        if member_record["selectionMetric"] == "validation_total_loss":
+            member_record["bestValidationTotalLoss"] = member_progress["best_metric"]
+        else:
+            member_record["bestValidationWldClassificationLoss"] = member_progress["best_metric"]
+        members.append(member_record)
     manifest = {
         "schema": "tcn-loss-ensemble-manifest-v1", "status": "completed",
         "sourceData": str(data_path.resolve()), "sourceDataSha256": source_hash,
@@ -179,6 +195,7 @@ def train_ensemble(
         "targetMaxEpochs": target_max_epochs,
         "fixedSplit": fixed_split,
         "warmStartEnsemble": str(warm_start_ensemble.resolve()) if warm_start_ensemble else "",
+        "warmStartCheckpointName": warm_start_checkpoint_name if warm_start_ensemble else "",
         "seeds": seeds, "members": members,
     }
     atomic_write_json(output_dir / "ensemble_manifest.json", manifest)

@@ -35,6 +35,21 @@ evaluated child positions or decision nodes; their engine score may be absent.
 Next-state fields, child scores, `raw_loss`, and `disc_loss` are prohibited
 from model inputs.
 
+WLD uses the existing engine score perspective. `current_score` is the acting
+player's best score before the placement. For a normal turn change,
+`actual_move_score = -next_best_score`; when a pass leaves the same player to act,
+`actual_move_score = next_best_score`. Scores map by sign to Loss=0, Draw=1, Win=2,
+then `drop = max(0, before_rank - after_rank)`, `wld_class = drop`, and
+`wld_loss = drop / 2`.
+
+`wld_label_available` is true only when both scores are valid, child continuity is
+proved, the source row is an actual placement, and pass-excluded
+`global_placement_ply >= 39`. Ply 39 is included; ply 38 is not applicable.
+`finalStatus` is never a node WLD label. If scores are recovered from
+`current_hint_values = tanh(score / scale)`, `scale` must come from checkpoint
+metadata and every valid inverse must recover an integer within the tolerance
+recorded in the materialization manifest.
+
 The only allowed input policy is
 `uniform-no-current-player-loss-history-v1`, identically applied to train,
 validation, test, later control games, and reported games. No current-player prior
@@ -57,7 +72,8 @@ confirmed. Required arrays are:
 - `current_hint_values`: games × time × 4;
 - `prev_own_hint_values`: games × time × 2;
 - `actual_thinking_time_ms`, `raw_loss`, `disc_loss`, `severity_class`,
-  `label_zero`, `label_ge4`, `label_ge10`, `mask`, `global_placement_ply`;
+  `label_zero`, `label_ge4`, `label_ge10`, `wld_class`, `wld_loss`,
+  `wld_label_available`, `mask`, `global_placement_ply`;
 - one-per-game `game_id` and `split`, plus games × time `player_id` and
   `side_to_move`.
 - ordered `input_features` (362 names), ordered `board_cnn_channels` (23 names),
@@ -71,7 +87,9 @@ confirmed. Required arrays are:
 `split` is one of `train`, `validation`, `test`; each game appears once. Report/output
 rows retain game/player IDs, placement ply, side, actual/predicted thinking time,
 actual loss, zero/ge4/ge10 labels and probabilities, all four raw class probabilities,
-label quality, pass, and child continuity. No expected disc-loss regression is present.
+WLD applicability, all three WLD probabilities, `probability_wld_any`, and
+`expected_wld_loss`, plus label quality, pass, and child continuity. Pre-ply-39 WLD
+exports are blank/not applicable. No expected disc-loss regression is present.
 These output/audit fields must never be fed back into a later node's `X`.
 The fixed later bootstrap stages are 1–30, 31–47, 48–53, and 54–60.
 
@@ -112,11 +130,3 @@ Two temporal policies are recognized:
   explicit temporal-leakage authorization. It is used here by the user's explicit
   decision to trust a rough historical backfill. Metrics produced under this policy
   must retain that disclosure and must not be relabelled as leak-free evidence.
-
-## Still awaiting the new-data Agent
-
-Before materialization is finalized, confirm: exact raw file format; whether context
-metadata remains separate; complete official feature source columns; split manifest
-location; string encodings for board/side/move; and whether labels arrive precomputed
-in addition to auditable child rows. Formal training is blocked until those items,
-coverage, negative-raw-loss diagnostics, and game isolation pass validation.

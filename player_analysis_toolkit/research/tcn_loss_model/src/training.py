@@ -17,10 +17,16 @@ import torch
 from sklearn.metrics import average_precision_score, brier_score_loss, log_loss, roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 
-from .checkpoint import load_checkpoint_payload, load_transferred_model, load_transferred_profile_model, sha256_file
+from .checkpoint import (
+    load_checkpoint_payload, load_trained_state_with_wld_migration,
+    load_transferred_model, load_transferred_profile_model, sha256_file,
+)
 from .data_contract import validate_model_ready_npz
 from .feature_policy import INPUT_POLICY
-from .model import ProfileConditionedLossModel, SEVERITY_CLASS_NAMES, TimeConditionedLossModel, multitask_loss
+from .model import (
+    ProfileConditionedLossModel, SEVERITY_CLASS_NAMES, WLD_CLASS_NAMES,
+    TimeConditionedLossModel, multitask_loss,
+)
 from .oq_profile_features import (
     OQ_PROFILE_FEATURE_NAMES,
     profile_ablation_hash,
@@ -29,8 +35,9 @@ from .oq_profile_features import (
 from .progress import atomic_write_json, write_progress
 
 MODEL_NAME = "board-cnn-causal-tcn-time-conditioned-severe-loss"
-BASELINE_MODEL_SCHEMA = "time-plus-four-class-severity-v2-uniform-loss-history-policy"
-PROFILE_MODEL_SCHEMA = "time-plus-four-class-severity-oq-profile-v1"
+BASELINE_MODEL_SCHEMA = "time-plus-four-class-severity-plus-three-class-wld-v1"
+PROFILE_MODEL_SCHEMA = "time-plus-four-class-severity-plus-three-class-wld-oq-profile-v1"
+LEGACY_PROFILE_MODEL_SCHEMA = "time-plus-four-class-severity-oq-profile-v1"
 MODEL_SCHEMA = BASELINE_MODEL_SCHEMA
 
 
@@ -44,9 +51,11 @@ class TrainingConfig:
     weight_decay: float = 1.0e-4
     time_task_weight: float = 0.25
     severity_classification_weight: float = 1.0
+    wld_classification_weight: float = 1.0
     severity_class_weights: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
     num_workers: int = 0
     seed: int = 42
+    training_mode: str = "joint"
 
     @classmethod
     def load(cls, path: Path) -> "TrainingConfig":
@@ -58,6 +67,12 @@ class TrainingConfig:
         cfg = cls(**payload)
         if len(cfg.severity_class_weights) != 4 or any(not np.isfinite(x) or x <= 0 for x in cfg.severity_class_weights):
             raise ValueError("severity_class_weights must have four finite positive entries")
+        if not np.isfinite(cfg.wld_classification_weight) or cfg.wld_classification_weight < 0:
+            raise ValueError("wld_classification_weight must be finite and nonnegative")
+        if cfg.training_mode not in {"joint", "wld-head-only"}:
+            raise ValueError("training_mode must be 'joint' or 'wld-head-only'")
+        if cfg.training_mode == "wld-head-only" and cfg.head_epochs != 0:
+            raise ValueError("wld-head-only training requires head_epochs=0")
         return cfg
 
 
@@ -65,7 +80,8 @@ class SequenceDataset(Dataset):
     TENSOR_NAMES = (
         "X", "board_tokens", "board_move_tokens", "current_hint_tokens",
         "current_hint_values", "prev_own_hint_values", "actual_thinking_time_ms",
-        "severity_class", "mask",
+        "severity_class", "mask", "wld_class", "wld_label_available",
+        "global_placement_ply",
     )
 
     def __init__(self, path: Path, split: str, require_oq_profile: bool = False) -> None:
@@ -172,20 +188,29 @@ def _binary_metrics(labels: np.ndarray, probabilities: np.ndarray, bins: int = 1
 def evaluate(model: TimeConditionedLossModel, loader: DataLoader, device: torch.device,
              cfg: TrainingConfig, use_oq_profile: bool = False) -> dict[str, Any]:
     model.eval()
-    loss_sums = {key: 0.0 for key in ("total", "thinking_time", "severity_classification")}
-    targets, probabilities = [], []
+    loss_sums = {key: 0.0 for key in ("total", "thinking_time", "severity_classification", "wld_classification")}
+    targets, probabilities, wld_targets, wld_probabilities = [], [], [], []
     for batch in loader:
         batch = _move(batch, device)
         output = _model_output(model, batch, use_oq_profile)
         losses = multitask_loss(
             output, batch["actual_thinking_time_ms"].float(), batch["severity_class"].float(), batch["mask"],
             cfg.time_task_weight, cfg.severity_classification_weight, cfg.severity_class_weights,
+            batch["wld_class"].float(), batch["wld_label_available"],
+            batch["global_placement_ply"], cfg.wld_classification_weight,
         )
         for key in loss_sums:
             loss_sums[key] += float(losses[key].item())
         valid = batch["mask"].bool() & torch.isfinite(batch["severity_class"])
         targets.append(batch["severity_class"][valid].detach().cpu().numpy().astype(int))
         probabilities.append(output.severity_class_probabilities[valid].detach().cpu().numpy())
+        wld_valid = (
+            batch["mask"].bool() & batch["wld_label_available"].bool()
+            & (batch["global_placement_ply"] >= 39)
+        )
+        if bool(wld_valid.any()):
+            wld_targets.append(batch["wld_class"][wld_valid].detach().cpu().numpy().astype(int))
+            wld_probabilities.append(output.wld_probabilities[wld_valid].detach().cpu().numpy())
     losses = {key: value / len(loader) for key, value in loss_sums.items()}
     classes = np.concatenate(targets)
     class_probabilities = np.concatenate(probabilities)
@@ -197,6 +222,22 @@ def evaluate(model: TimeConditionedLossModel, loader: DataLoader, device: torch.
     ge10_probability = class_probabilities[:, 3]
     if np.any(ge10_probability > ge4_probability + 1e-6) or np.any(ge4_probability > 1 - zero_probability + 1e-6):
         raise AssertionError("derived severity probabilities violate monotonicity")
+    if not wld_targets:
+        raise ValueError("evaluation split has no valid WLD nodes at global placement ply >= 39")
+    wld_classes = np.concatenate(wld_targets)
+    wld_class_probabilities = np.concatenate(wld_probabilities)
+    expected_wld = 0.5 * wld_class_probabilities[:, 1] + wld_class_probabilities[:, 2]
+    actual_wld = wld_classes / 2.0
+    wld_metrics = {
+        "nodes": int(len(wld_classes)),
+        "cross_entropy": float(log_loss(wld_classes, wld_class_probabilities, labels=[0, 1, 2])),
+        "accuracy": float((wld_class_probabilities.argmax(axis=1) == wld_classes).mean()),
+        "expected_wld_loss_mae": float(np.abs(expected_wld - actual_wld).mean()),
+        "expected_wld_loss_mean": float(expected_wld.mean()),
+        "actual_wld_loss_mean": float(actual_wld.mean()),
+        "class_actual_rates": {name: float((wld_classes == i).mean()) for i, name in enumerate(WLD_CLASS_NAMES)},
+        "class_mean_probabilities": {name: float(wld_class_probabilities[:, i].mean()) for i, name in enumerate(WLD_CLASS_NAMES)},
+    }
     return {
         **losses,
         "zero": _binary_metrics(zero, zero_probability),
@@ -204,6 +245,7 @@ def evaluate(model: TimeConditionedLossModel, loader: DataLoader, device: torch.
         "ge10": _binary_metrics(ge10, ge10_probability),
         "class_actual_rates": {name: float((classes == index).mean()) for index, name in enumerate(SEVERITY_CLASS_NAMES)},
         "class_mean_probabilities": {name: float(class_probabilities[:, index].mean()) for index, name in enumerate(SEVERITY_CLASS_NAMES)},
+        "wld": wld_metrics,
     }
 
 
@@ -294,20 +336,26 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
     )
     if initial_profile_checkpoint is not None:
         warm_start = torch.load(initial_profile_checkpoint, map_location="cpu", weights_only=False)
-        if warm_start.get("schema") != "tcn-loss-profile-checkpoint-v1":
+        if warm_start.get("schema") not in {
+            "tcn-loss-profile-checkpoint-v1", "tcn-loss-profile-wld-checkpoint-v2"
+        }:
             raise ValueError("warm-start checkpoint is not a profile checkpoint")
         warm_manifest = warm_start["manifest"]
         required_warm_identity = {
-            "modelSchema": PROFILE_MODEL_SCHEMA,
             "modelVariant": "oq-profile",
             "baseCheckpointSha256": base_hash,
             "oqProfileAblation": profile_ablation,
             "oqProfileAblationSha256": profile_ablation_hash(profile_ablation),
         }
         warm_mismatches = [key for key, value in required_warm_identity.items() if warm_manifest.get(key) != value]
+        if warm_manifest.get("modelSchema") not in {PROFILE_MODEL_SCHEMA, LEGACY_PROFILE_MODEL_SCHEMA}:
+            warm_mismatches.append("modelSchema")
         if warm_mismatches:
             raise ValueError(f"warm-start profile identity mismatch: {warm_mismatches}")
-        model.load_state_dict(warm_start["modelStateDict"], strict=True)
+        migration = load_trained_state_with_wld_migration(model, warm_start["modelStateDict"])
+        manifest["warmStartStateMigration"] = migration
+        manifest["warmStartEpoch"] = int(warm_start.get("epoch", 0))
+        manifest["warmStartStage"] = str(warm_start.get("stage", ""))
         manifest["warmStartProfilePreprocessingSha256"] = warm_manifest.get("oqProfilePreprocessingSha256", "")
         atomic_write_json(output_dir / "run_manifest.json", manifest)
     device = torch.device(device_info["device"])
@@ -319,11 +367,25 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
     validation_loader = DataLoader(SequenceDataset(data_path, "validation", use_oq_profile), batch_size=cfg.batch_size,
                                    num_workers=cfg.num_workers, pin_memory=True)
     write_progress(output_dir, status="ready-to-train", stage="checkpoint-loaded", total_batches=len(train_loader))
-    start_epoch, best_value, best_epoch, stage = 1, float("inf"), None, "training-heads"
-    for parameter in model.backbone.parameters():
-        parameter.requires_grad = False
-    optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=cfg.head_learning_rate,
-                                  weight_decay=cfg.weight_decay)
+    selection_metric = "validation_wld_classification_loss" if cfg.training_mode == "wld-head-only" else "validation_total_loss"
+    manifest["trainingMode"] = cfg.training_mode
+    manifest["selectionMetric"] = selection_metric
+    atomic_write_json(output_dir / "run_manifest.json", manifest)
+    start_epoch, best_value, best_epoch = 1, float("inf"), None
+    if cfg.training_mode == "wld-head-only":
+        stage = "wld-head-only"
+        for parameter in model.parameters():
+            parameter.requires_grad = False
+        for parameter in model.wld_head.parameters():
+            parameter.requires_grad = True
+        optimizer = torch.optim.AdamW(model.wld_head.parameters(), lr=cfg.fine_tune_learning_rate,
+                                      weight_decay=cfg.weight_decay)
+    else:
+        stage = "training-heads"
+        for parameter in model.backbone.parameters():
+            parameter.requires_grad = False
+        optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=cfg.head_learning_rate,
+                                      weight_decay=cfg.weight_decay)
     if resume:
         saved = torch.load(resume, map_location="cpu", weights_only=False)
         expected = {key: manifest[key] for key in (
@@ -350,7 +412,7 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
                 "targetMaxEpochs": max_epochs,
             }
             atomic_write_json(output_dir / "run_manifest.json", manifest)
-        model.load_state_dict(saved["modelStateDict"], strict=True)
+        load_trained_state_with_wld_migration(model, saved["modelStateDict"])
         stage = saved["stage"]
         if stage == "fine-tuning":
             for parameter in model.backbone.parameters():
@@ -364,16 +426,48 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
         loader_generator.set_state(saved["loaderGeneratorState"])
         start_epoch = int(saved["epoch"]) + 1
         best_value, best_epoch = float(saved["bestValidationLoss"]), saved["bestEpoch"]
+    elif cfg.training_mode == "wld-head-only" and initial_profile_checkpoint is not None:
+        initial_validation = evaluate(model, validation_loader, device, cfg, use_oq_profile)
+        best_value = float(initial_validation["wld_classification"])
+        best_epoch = 0
+        atomic_write_json(output_dir / "initial_validation_metrics.json", {
+            "schema": "tcn-loss-initial-validation-metrics-v1",
+            "sourceCheckpoint": str(initial_profile_checkpoint.resolve()),
+            "sourceEpoch": int(manifest.get("warmStartEpoch", 0)),
+            "selectionMetric": selection_metric,
+            **initial_validation,
+        })
+        _atomic_torch_save(output_dir / "best.pt", {
+            "schema": "tcn-loss-profile-wld-checkpoint-v2" if use_oq_profile else "tcn-loss-wld-checkpoint-v2",
+            "modelStateDict": model.state_dict(),
+            "optimizerStateDict": optimizer.state_dict(), "epoch": 0, "stage": stage,
+            "bestValidationLoss": best_value, "bestEpoch": best_epoch,
+            "selectionMetric": selection_metric,
+            "manifest": manifest, "config": config_payload,
+            "pythonRandomState": random.getstate(),
+            "numpyRandomState": np.random.get_state(),
+            "torchRandomState": torch.get_rng_state(),
+            "cudaRandomStates": torch.cuda.get_rng_state_all(),
+            "loaderGeneratorState": loader_generator.get_state(),
+        })
+        write_progress(
+            output_dir, status="wld-head-only", stage=stage, epoch=0,
+            validation_total_loss=initial_validation["total"],
+            wld_classification_loss=initial_validation["wld_classification"],
+            wld_validation_metrics=initial_validation["wld"],
+            best_metric=best_value, best_epoch=best_epoch,
+            selection_metric=selection_metric, learning_rate=optimizer.param_groups[0]["lr"],
+        )
     history_path, started = output_dir / "training_history.csv", time.time()
     for epoch in range(start_epoch, max_epochs + 1):
-        if epoch == cfg.head_epochs + 1 and stage != "fine-tuning":
+        if cfg.training_mode == "joint" and epoch == cfg.head_epochs + 1 and stage != "fine-tuning":
             stage = "fine-tuning"
             for parameter in model.backbone.parameters():
                 parameter.requires_grad = True
             optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.fine_tune_learning_rate, weight_decay=cfg.weight_decay)
             write_progress(output_dir, status="fine-tuning", stage=stage, epoch=epoch - 1)
         model.train()
-        totals = {key: 0.0 for key in ("total", "thinking_time", "severity_classification")}
+        totals = {key: 0.0 for key in ("total", "thinking_time", "severity_classification", "wld_classification")}
         for batch_index, batch in enumerate(train_loader, start=1):
             batch = _move(batch, device)
             optimizer.zero_grad(set_to_none=True)
@@ -381,6 +475,8 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
             losses = multitask_loss(
                 output, batch["actual_thinking_time_ms"].float(), batch["severity_class"].float(), batch["mask"],
                 cfg.time_task_weight, cfg.severity_classification_weight, cfg.severity_class_weights,
+                batch["wld_class"].float(), batch["wld_label_available"],
+                batch["global_placement_ply"], cfg.wld_classification_weight,
             )
             losses["total"].backward()
             optimizer.step()
@@ -388,14 +484,20 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
                 totals[key] += float(losses[key].item())
         train_metrics = {key: value / len(train_loader) for key, value in totals.items()}
         validation_metrics = evaluate(model, validation_loader, device, cfg, use_oq_profile)
-        improved = validation_metrics["total"] < best_value
+        selection_value = (
+            validation_metrics["wld_classification"]
+            if cfg.training_mode == "wld-head-only"
+            else validation_metrics["total"]
+        )
+        improved = selection_value < best_value
         if improved:
-            best_value, best_epoch = validation_metrics["total"], epoch
+            best_value, best_epoch = selection_value, epoch
         checkpoint = {
-            "schema": "tcn-loss-profile-checkpoint-v1" if use_oq_profile else "tcn-loss-checkpoint-v1",
+            "schema": "tcn-loss-profile-wld-checkpoint-v2" if use_oq_profile else "tcn-loss-wld-checkpoint-v2",
             "modelStateDict": model.state_dict(),
             "optimizerStateDict": optimizer.state_dict(), "epoch": epoch, "stage": stage,
             "bestValidationLoss": best_value, "bestEpoch": best_epoch,
+            "selectionMetric": selection_metric,
             "manifest": manifest, "config": config_payload,
             "pythonRandomState": random.getstate(),
             "numpyRandomState": np.random.get_state(),
@@ -410,9 +512,13 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
             "epoch": epoch, "stage": stage, "train_total_loss": train_metrics["total"],
             "train_thinking_time_loss": train_metrics["thinking_time"],
             "train_severity_classification_loss": train_metrics["severity_classification"],
+            "train_wld_classification_loss": train_metrics["wld_classification"],
             "validation_total_loss": validation_metrics["total"],
             "validation_thinking_time_loss": validation_metrics["thinking_time"],
             "validation_severity_classification_loss": validation_metrics["severity_classification"],
+            "validation_wld_classification_loss": validation_metrics["wld_classification"],
+            "validation_wld_accuracy": validation_metrics["wld"]["accuracy"],
+            "validation_expected_wld_loss_mae": validation_metrics["wld"]["expected_wld_loss_mae"],
             "zero_log_loss": validation_metrics["zero"]["log_loss"],
             "ge4_log_loss": validation_metrics["ge4"]["log_loss"],
             "ge10_log_loss": validation_metrics["ge10"]["log_loss"],
@@ -431,6 +537,8 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
             validation_total_loss=validation_metrics["total"],
             thinking_time_loss=validation_metrics["thinking_time"],
             severity_classification_loss=validation_metrics["severity_classification"],
+            wld_classification_loss=validation_metrics["wld_classification"],
+            wld_validation_metrics=validation_metrics["wld"],
             zero_loss_log_loss=validation_metrics["zero"]["log_loss"],
             ge4_log_loss=validation_metrics["ge4"]["log_loss"], ge10_log_loss=validation_metrics["ge10"]["log_loss"],
             zero_loss_brier=validation_metrics["zero"]["brier_score"],
@@ -440,6 +548,7 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
             severity_class_actual_rates=validation_metrics["class_actual_rates"],
             severity_class_mean_probabilities=validation_metrics["class_mean_probabilities"],
             best_metric=best_value, best_epoch=best_epoch, learning_rate=optimizer.param_groups[0]["lr"],
+            selection_metric=selection_metric,
             elapsed_seconds=elapsed, eta_seconds=eta,
         )
     if not evaluate_test:
@@ -454,7 +563,7 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
         })
         write_progress(
             output_dir, status="completed-validation-only", stage="completed-validation-only",
-            epoch=max_epochs, validation_total_loss=best_value, best_metric=best_value,
+            epoch=max_epochs, validation_total_loss=validation_metrics["total"], best_metric=best_value,
             best_epoch=best_epoch, elapsed_seconds=time.time() - started, eta_seconds=0,
         )
         return
@@ -462,9 +571,9 @@ def train_cuda(data_path: Path, base_checkpoint: Path, config_path: Path, output
     test_loader = DataLoader(SequenceDataset(data_path, "test", use_oq_profile), batch_size=cfg.batch_size,
                              num_workers=cfg.num_workers, pin_memory=True)
     best = torch.load(output_dir / "best.pt", map_location=device, weights_only=False)
-    model.load_state_dict(best["modelStateDict"], strict=True)
+    load_trained_state_with_wld_migration(model, best["modelStateDict"])
     test_metrics = evaluate(model, test_loader, device, cfg, use_oq_profile)
     atomic_write_json(output_dir / "test_metrics.json", {"schema": "tcn-loss-test-metrics-v1", **test_metrics})
     write_progress(output_dir, status="completed", stage="completed", epoch=max_epochs,
-                   validation_total_loss=best_value, best_metric=best_value, best_epoch=best_epoch,
+                   validation_total_loss=validation_metrics["total"], best_metric=best_value, best_epoch=best_epoch,
                    elapsed_seconds=time.time() - started, eta_seconds=0)

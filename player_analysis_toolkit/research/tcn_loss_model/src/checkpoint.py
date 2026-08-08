@@ -16,6 +16,29 @@ from .model import ProfileConditionedLossModel, TimeConditionedLossModel
 EXPECTED_MODEL_NAME = "tcn_board_cnn_time_model"
 EXPECTED_INPUT_DIM = 362
 EXPECTED_BOARD_CHANNELS = 23
+EXPECTED_LEGACY_WLD_MISSING_KEYS = frozenset({"wld_head.weight", "wld_head.bias"})
+
+
+def load_trained_state_with_wld_migration(model: torch.nn.Module, state: dict[str, Any]) -> dict[str, Any]:
+    """Strictly load current state, or an old state missing only the new WLD head."""
+    expected = set(model.state_dict())
+    supplied = set(state)
+    missing = expected - supplied
+    unexpected = supplied - expected
+    if unexpected or (missing and missing != EXPECTED_LEGACY_WLD_MISSING_KEYS):
+        raise RuntimeError(
+            "checkpoint state mismatch: "
+            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+        )
+    merged = model.state_dict()
+    merged.update(state)
+    model.load_state_dict(merged, strict=True)
+    return {
+        "migratedLegacyCheckpoint": missing == EXPECTED_LEGACY_WLD_MISSING_KEYS,
+        "missingKeys": sorted(missing),
+        "unexpectedKeys": sorted(unexpected),
+        "strictFinalLoad": True,
+    }
 
 
 def sha256_file(path: Path) -> str:

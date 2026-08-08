@@ -21,6 +21,7 @@ def initial_progress() -> dict[str, Any]:
         "gpu_total_memory_bytes": None, "epoch": 0, "max_epochs": 0, "batch": 0,
         "total_batches": 0, "train_total_loss": None, "validation_total_loss": None,
         "thinking_time_loss": None, "severity_classification_loss": None,
+        "wld_classification_loss": None, "wld_validation_metrics": None,
         "zero_loss_log_loss": None, "ge4_log_loss": None, "ge10_log_loss": None,
         "zero_loss_brier": None, "ge4_brier": None, "ge10_brier": None,
         "severity_class_actual_rates": None, "severity_class_mean_probabilities": None,

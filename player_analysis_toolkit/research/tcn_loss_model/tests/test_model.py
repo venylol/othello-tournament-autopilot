@@ -35,6 +35,10 @@ class ModelTests(unittest.TestCase):
     self.assertTrue(bool(torch.all(one.probability_loss_ge10 <= one.probability_loss_ge4)))
     self.assertTrue(bool(torch.all(one.probability_loss_ge4 <= one.probability_loss_positive)))
     self.assertTrue(torch.allclose(one.severity_class_probabilities.sum(dim=-1), torch.ones(2, 3)))
+    self.assertTrue(torch.allclose(one.wld_probabilities.sum(dim=-1), torch.ones(2, 3)))
+    expected = 0.5 * one.wld_probabilities[..., 1] + one.wld_probabilities[..., 2]
+    self.assertTrue(torch.allclose(one.expected_wld_loss, expected))
+    self.assertTrue(bool(torch.all((expected >= 0) & (expected <= 1))))
 
 
   def test_multitask_loss_is_finite(self):
@@ -44,6 +48,28 @@ class ModelTests(unittest.TestCase):
     severity = torch.tensor([[0.0, 1.0, 2.0], [3.0, 0.0, 2.0]])
     losses = multitask_loss(output, actual_time, severity, torch.ones(2, 3, dtype=torch.bool))
     self.assertTrue(all(bool(torch.isfinite(value)) for value in losses.values()))
+    self.assertEqual(float(losses["wld_classification"]), 0.0)
+
+  def test_wld_cross_entropy_and_empty_batch_are_finite(self):
+    model = TimeConditionedLossModel(ModelConfig())
+    actual_time = torch.full((2, 3), 1000.0)
+    output = model(*inputs(), actual_time)
+    severity = torch.zeros((2, 3))
+    wld_class = torch.tensor([[0.0, 1.0, 2.0], [0.0, 0.0, 0.0]])
+    available = torch.tensor([[True, True, True], [False, False, False]])
+    ply = torch.tensor([[39, 40, 41], [1, 2, 3]])
+    losses = multitask_loss(
+        output, actual_time, severity, torch.ones(2, 3, dtype=torch.bool),
+        wld_class=wld_class, wld_label_available=available,
+        global_placement_ply=ply, wld_weight=1.0,
+    )
+    self.assertGreater(float(losses["wld_classification"]), 0.0)
+    empty = multitask_loss(
+        output, actual_time, severity, torch.ones(2, 3, dtype=torch.bool),
+        wld_class=wld_class, wld_label_available=torch.zeros_like(available),
+        global_placement_ply=ply, wld_weight=1.0,
+    )
+    self.assertEqual(float(empty["wld_classification"]), 0.0)
 
   def test_profile_branch_zero_initialization_is_exact_baseline_identity(self):
     torch.manual_seed(17)

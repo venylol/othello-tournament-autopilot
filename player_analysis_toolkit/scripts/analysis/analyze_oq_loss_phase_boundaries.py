@@ -52,6 +52,7 @@ PLOT_METRICS = (
     ("loss_ge4_rate", "Loss >= 4 rate"),
     ("loss_ge10_rate", "Loss >= 10 rate"),
 )
+ENGINE_WLD_TOTAL_FIELD = "engine_wld_loss_total_from_ply39"
 
 
 def utc_now_iso() -> str:
@@ -71,6 +72,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-stage-width", type=int, default=6)
     parser.add_argument("--min-ply-games", type=int, default=30)
     parser.add_argument("--max-ply", type=int, default=60)
+    parser.add_argument(
+        "--wld-from-ply",
+        type=int,
+        choices=(39,),
+        help="write WLD loss totals from inclusive pass-free global placement ply 39",
+    )
     parser.add_argument(
         "--plot-metric",
         action="append",
@@ -775,6 +782,30 @@ def main() -> int:
         np.nan,
     )
     hints["disc_loss"] = hints["raw_loss"].clip(lower=0)
+    hints["actual_move_score"] = np.where(
+        hints["has_consecutive_child"] & complete_score,
+        np.where(
+            hints["same_side_after_move"],
+            hints["next_best_score"],
+            -hints["next_best_score"],
+        ),
+        np.nan,
+    )
+    before_rank = np.where(
+        hints["hint6_1_score"] > 0,
+        2,
+        np.where(hints["hint6_1_score"] < 0, 0, 1),
+    )
+    after_rank = np.where(
+        hints["actual_move_score"] > 0,
+        2,
+        np.where(hints["actual_move_score"] < 0, 0, 1),
+    )
+    hints["wld_loss"] = np.where(
+        hints["has_consecutive_child"] & complete_score,
+        np.maximum(0, before_rank - after_rank) / 2.0,
+        np.nan,
+    )
 
     hints["actual_hint_rank"] = np.nan
     hints["actual_hint_score"] = np.nan
@@ -870,6 +901,50 @@ def main() -> int:
         args.min_ply_games,
     )
     pairs = repeated_pairs(games)
+
+    wld_game_player_totals: pd.DataFrame | None = None
+    wld_player_totals: pd.DataFrame | None = None
+    if args.wld_from_ply is not None:
+        wld_nodes = primary_all[
+            primary_all["global_placement_ply"].ge(args.wld_from_ply)
+            & primary_all["wld_loss"].notna()
+        ].copy()
+        summed_game_players = (
+            wld_nodes.groupby(
+                ["game_id", "player_id", "side_to_move"], observed=True, dropna=False
+            )["wld_loss"]
+            .sum()
+            .rename(ENGINE_WLD_TOTAL_FIELD)
+            .reset_index()
+            .rename(columns={"side_to_move": "side"})
+        )
+        base_game_players = (
+            primary_all[["game_id", "player_id", "side_to_move"]]
+            .drop_duplicates()
+            .rename(columns={"side_to_move": "side"})
+        )
+        wld_game_player_totals = base_game_players.merge(
+            summed_game_players,
+            on=["game_id", "player_id", "side"],
+            how="left",
+        )
+        wld_game_player_totals[ENGINE_WLD_TOTAL_FIELD] = wld_game_player_totals[
+            ENGINE_WLD_TOTAL_FIELD
+        ].fillna(0.0)
+        summed_players = (
+            wld_nodes.groupby(["player_id"], observed=True, dropna=False)["wld_loss"]
+            .sum()
+            .rename(ENGINE_WLD_TOTAL_FIELD)
+            .reset_index()
+        )
+        wld_player_totals = primary_all[["player_id"]].drop_duplicates().merge(
+            summed_players,
+            on="player_id",
+            how="left",
+        )
+        wld_player_totals[ENGINE_WLD_TOTAL_FIELD] = wld_player_totals[
+            ENGINE_WLD_TOTAL_FIELD
+        ].fillna(0.0)
 
     current_duplicate_scans = {
         "games": scan_csv_keys(args.games, ["game_id"]),
@@ -1007,6 +1082,11 @@ def main() -> int:
         },
         "inputs": [file_manifest(path) for path in input_paths],
     }
+    if args.wld_from_ply is not None:
+        run_manifest["parameters"]["wld_from_ply"] = args.wld_from_ply
+        run_manifest["parameters"]["wld_ply_coordinate"] = (
+            "global_placement_ply counts actual coordinate placements only; pass rows do not consume ply"
+        )
 
     ply_stats.to_csv(args.output_dir / "ply_statistics_postbook.csv", index=False, encoding="utf-8")
     candidate_comparison.to_csv(args.output_dir / "candidate_partitions.csv", index=False, encoding="utf-8")
@@ -1026,8 +1106,39 @@ def main() -> int:
             "input_summary": input_summary,
             "candidate_partitions": candidates,
             "candidate_comparison": candidate_comparison.to_dict(orient="records"),
+            **(
+                {
+                    "wldFromPly": args.wld_from_ply,
+                    "engineWldLossTotals": {
+                        "gamePlayerTotals": wld_game_player_totals.to_dict(orient="records"),
+                        "playerTotals": wld_player_totals.to_dict(orient="records"),
+                    },
+                }
+                if args.wld_from_ply is not None
+                else {}
+            ),
         },
     )
+    if args.wld_from_ply is not None:
+        assert wld_game_player_totals is not None and wld_player_totals is not None
+        wld_game_player_totals.to_csv(
+            args.output_dir / "engine_wld_loss_totals_by_game_player_from_ply39.csv",
+            index=False,
+            encoding="utf-8",
+        )
+        wld_player_totals.to_csv(
+            args.output_dir / "engine_wld_loss_totals_by_player_from_ply39.csv",
+            index=False,
+            encoding="utf-8",
+        )
+        write_json(
+            args.output_dir / "engine_wld_loss_totals_from_ply39.json",
+            {
+                "wldFromPly": args.wld_from_ply,
+                "gamePlayerTotals": wld_game_player_totals.to_dict(orient="records"),
+                "playerTotals": wld_player_totals.to_dict(orient="records"),
+            },
+        )
     plot_ply_metrics(
         ply_stats,
         candidates,
@@ -1036,7 +1147,17 @@ def main() -> int:
     )
     plot_tail_coverage(ply_stats, args.output_dir / "ply_game_coverage.png")
 
-    print(json.dumps(json_safe({"output_dir": str(args.output_dir.resolve()), "candidates": candidates, "primary": input_summary["primary_postbook"]}), ensure_ascii=False, indent=2))
+    terminal_summary = {
+        "output_dir": str(args.output_dir.resolve()),
+        "candidates": candidates,
+        "primary": input_summary["primary_postbook"],
+    }
+    if args.wld_from_ply is not None:
+        terminal_summary["engineWldLossTotals"] = {
+            "gamePlayerTotals": wld_game_player_totals.to_dict(orient="records"),
+            "playerTotals": wld_player_totals.to_dict(orient="records"),
+        }
+    print(json.dumps(json_safe(terminal_summary), ensure_ascii=False, indent=2))
     return 0
 
 

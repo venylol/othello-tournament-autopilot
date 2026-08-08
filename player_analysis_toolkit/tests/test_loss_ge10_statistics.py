@@ -132,6 +132,16 @@ class LossGe10StatisticsTests(unittest.TestCase):
         )
         self.assertEqual(first, second)
 
+    def test_zero_loss_bootstrap_uses_whole_games(self) -> None:
+        reported = [game("r1", [0, 0]), game("r2", [0])]
+        controls = [game("c1", [4]), game("c2", [10, 10])]
+        self.assertEqual(
+            analysis_core.cluster_bootstrap_zero_loss_rate_difference(
+                reported, controls, repetitions=20, seed=7
+            ),
+            [1.0, 1.0],
+        )
+
     def test_json_csv_and_markdown_keep_ge10_adjacent_and_consistent(self) -> None:
         aggregate = analysis_core.aggregate_loss_games([game("g", [3, 4, 9, 10])])
         keys = list(aggregate)
