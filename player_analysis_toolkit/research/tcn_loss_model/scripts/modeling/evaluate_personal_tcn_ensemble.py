@@ -37,7 +37,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--personal-ensemble-manifest", type=Path, required=True)
     parser.add_argument("--base-checkpoint", type=Path, required=True)
     parser.add_argument("--reported-game", action="append", required=True)
-    parser.add_argument("--offbook-ply", action="append", required=True, help="GAME_ID=PLY")
+    parser.add_argument(
+        "--offbook-ply", action="append", default=[], help="optional GAME_ID=PLY; games without one use all target moves"
+    )
     parser.add_argument("--node-output", type=Path, required=True)
     parser.add_argument("--summary-output", type=Path, required=True)
     parser.add_argument(
@@ -58,6 +60,20 @@ def parse_mapping(items: list[str]) -> dict[str, int]:
             raise ValueError(f"expected GAME_ID=PLY, got {item!r}")
         result[key] = int(value)
     return result
+
+
+def validate_reported_selection(
+    reported: list[str], offbook: dict[str, int], split_reported: set[str]
+) -> None:
+    requested = set(reported)
+    unknown_anchors = set(offbook) - requested
+    if unknown_anchors:
+        raise ValueError(f"offbook ply supplied for a non-reported game: {sorted(unknown_anchors)}")
+    if requested != split_reported:
+        raise ValueError(
+            f"reported arguments do not match NPZ test split: "
+            f"arguments={sorted(requested)}, split={sorted(split_reported)}"
+        )
 
 
 def bootstrap_draws(replicates: int, member_count: int, game_count: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -276,8 +292,6 @@ def main() -> int:
         raise ValueError("OQ profile ablation hash mismatch")
     reported = args.reported_game
     offbook = parse_mapping(args.offbook_ply)
-    if set(reported) != set(offbook):
-        raise ValueError("every reported game must have exactly one offbook ply")
     device = torch.device(args.device)
     with np.load(args.data, allow_pickle=False) as data:
         games, steps = data["X"].shape[:2]
@@ -286,15 +300,14 @@ def main() -> int:
         selected = valid & np.isin(game_grid, reported)
         ply = data["global_placement_ply"][selected]
         selected_games = game_grid[selected]
-        after_offbook = np.asarray([node_ply >= offbook[game_id] for node_ply, game_id in zip(ply, selected_games, strict=True)])
+        after_offbook = np.asarray([
+            game_id not in offbook or node_ply >= offbook[game_id]
+            for node_ply, game_id in zip(ply, selected_games, strict=True)
+        ])
         flat_indexes = np.flatnonzero(selected.reshape(-1))[after_offbook]
         splits = data["split"].astype(str)
         split_reported = set(data["game_id"].astype(str)[splits == "test"])
-        if set(reported) != split_reported:
-            raise ValueError(
-                f"reported arguments do not match NPZ test split: arguments={sorted(reported)}, "
-                f"split={sorted(split_reported)}"
-            )
+        validate_reported_selection(reported, offbook, split_reported)
         control_grid = np.broadcast_to((splits == "train")[:, None], (games, steps))
         control_selected = valid & control_grid
         control_flat_indexes = np.flatnonzero(control_selected.reshape(-1))
@@ -437,6 +450,7 @@ def main() -> int:
         "schema": "personal-tcn-reported-bootstrap-v1", "status": "completed",
         "interpretation": "actual indicator minus twelve-personal-model ensemble probability",
         "notCheatingProbability": True, "reportedGames": reported,
+        "fullGameFallbackNoOffbookGameIds": sorted(set(reported) - set(offbook)),
         "offbookGlobalPlacementPlyInclusive": offbook,
         "memberCount": len(members), "bootstrapReplicates": args.bootstrap_replicates,
         "bootstrapSeed": args.bootstrap_seed,

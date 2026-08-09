@@ -1109,13 +1109,20 @@ def cached_analysis_complete(task: GameTask, analysis: Any) -> bool:
     return True
 
 
-def open_persistent_engine(args: argparse.Namespace, cache_dir: Path) -> PersistentEngine:
+def open_persistent_engine(
+    args: argparse.Namespace, cache_dir: Path, worker_id: int | None = None
+) -> PersistentEngine:
+    stderr_name = (
+        "egaroucid-stderr.log"
+        if worker_id is None
+        else f"egaroucid-stderr-worker-{worker_id:02d}.log"
+    )
     return PersistentEngine(
         Path(args.engine),
         int(args.level),
         int(args.threads),
         int(args.hash),
-        cache_dir / "egaroucid-stderr.log",
+        cache_dir / stderr_name,
         Path(args.book) if args.book else None,
     )
 
@@ -1438,6 +1445,7 @@ def run_analyze_bundle(args: argparse.Namespace) -> dict[str, Any]:
         "book": str(Path(args.book).resolve()) if args.book else "enabled-default",
     }
     version = engine_version_text(engine_exe)
+    worker_count = max(1, int(args.workers))
     analyses: list[dict[str, Any]] = []
     pending: list[GameTask] = []
     for task in tasks:
@@ -1445,54 +1453,105 @@ def run_analyze_bundle(args: argparse.Namespace) -> dict[str, Any]:
         if path.exists():
             try:
                 cached = read_json(path)
-                if bundle_cached_analysis_complete(task, cached, expected_engine):
+                cached_worker_id = cached.get("bundleWorkerId")
+                if (
+                    bundle_cached_analysis_complete(task, cached, expected_engine)
+                    and isinstance(cached_worker_id, int)
+                    and 0 <= cached_worker_id < worker_count
+                ):
                     analyses.append(cached)
                     continue
             except Exception:
                 pass
         pending.append(task)
 
-    engine: PersistentEngine | None = None
     analyzed = 0
-    node_count_since_restart = 0
     restart_count = 0
     node_restart = max(0, int(args.node_restart))
-    try:
-        if pending:
-            engine = open_persistent_engine(args, cache_dir)
-        for task in pending:
-            if node_restart and node_count_since_restart >= node_restart and engine is not None:
+    task_queue: queue.Queue[GameTask | None] = queue.Queue()
+    result_queue: queue.Queue[tuple[str, int, GameTask | None, Any]] = queue.Queue()
+    for task in pending:
+        task_queue.put(task)
+    for _ in range(worker_count):
+        task_queue.put(None)
+
+    def worker_main(worker_id: int) -> None:
+        engine: PersistentEngine | None = None
+        worker_nodes = 0
+        worker_restarts = 0
+        try:
+            while True:
+                task = task_queue.get()
+                if task is None:
+                    break
+                try:
+                    if engine is None:
+                        engine = open_persistent_engine(args, cache_dir, worker_id)
+                    if node_restart and worker_nodes >= node_restart:
+                        engine.close()
+                        worker_restarts += 1
+                        worker_nodes = 0
+                        engine = open_persistent_engine(args, cache_dir, worker_id)
+                    analysis = analyze_game(task, engine)
+                    tournament = tournament_by_id.get(task.game_id)
+                    analysis["created"] = norm(task.detail.get("created"))
+                    analysis["finalStatus"] = norm(index_by_id[task.game_id].get("finalStatus"))
+                    analysis["isTournamentGame"] = tournament is not None
+                    analysis["tournament"] = tournament if tournament is not None else None
+                    analysis["bundleWorkerId"] = worker_id
+                    atomic_write_json(analyzed_game_path(cache_dir, task), analysis)
+                    worker_nodes += len(analysis.get("nodes", []))
+                    result_queue.put(("ok", worker_id, task, analysis))
+                except BaseException as exc:
+                    result_queue.put(("error", worker_id, task, exc))
+                    break
+        finally:
+            if engine is not None:
                 engine.close()
-                restart_count += 1
-                node_count_since_restart = 0
-                engine = open_persistent_engine(args, cache_dir)
-            if engine is None:
-                raise RuntimeError("Egaroucid engine is unavailable")
-            print(f"[{analyzed + 1}/{len(pending)}] analyze bundle game {task.game_id}", flush=True)
-            analysis = analyze_game(task, engine)
-            tournament = tournament_by_id.get(task.game_id)
-            analysis["created"] = norm(task.detail.get("created"))
-            analysis["finalStatus"] = norm(index_by_id[task.game_id].get("finalStatus"))
-            analysis["isTournamentGame"] = tournament is not None
-            analysis["tournament"] = tournament if tournament is not None else None
-            atomic_write_json(analyzed_game_path(cache_dir, task), analysis)
-            analyses.append(analysis)
-            analyzed += 1
-            node_count_since_restart += len(analysis.get("nodes", []))
-            atomic_write_json(
-                cache_dir / "progress.json",
-                {
-                    "schema": "ega-bundle-progress-v1",
-                    "updatedAt": now_iso(),
-                    "completedGameIds": sorted(item.get("gameId") for item in analyses),
-                    "completedCount": len(analyses),
-                    "totalCount": len(tasks),
-                    "engine": {**expected_engine, "version": version},
-                },
-            )
-    finally:
-        if engine is not None:
-            engine.close()
+            result_queue.put(("done", worker_id, None, worker_restarts))
+
+    workers = [
+        threading.Thread(target=worker_main, args=(worker_id,), name=f"level22-worker-{worker_id:02d}")
+        for worker_id in range(worker_count)
+    ]
+    for worker in workers:
+        worker.start()
+    done_workers = 0
+    failures: list[str] = []
+    while done_workers < worker_count:
+        status, worker_id, task, payload = result_queue.get()
+        if status == "done":
+            restart_count += int(payload)
+            done_workers += 1
+            continue
+        if status == "error":
+            game_id = task.game_id if task is not None else "unknown"
+            failures.append(f"worker {worker_id} game {game_id}: {payload}")
+            continue
+        analysis = payload
+        analyses.append(analysis)
+        analyzed += 1
+        print(
+            f"[{analyzed}/{len(pending)}] worker {worker_id:02d} completed bundle game {task.game_id}",
+            flush=True,
+        )
+        atomic_write_json(
+            cache_dir / "progress.json",
+            {
+                "schema": "ega-bundle-progress-v1",
+                "updatedAt": now_iso(),
+                "completedGameIds": sorted(item.get("gameId") for item in analyses),
+                "completedCount": len(analyses),
+                "totalCount": len(tasks),
+                "workerCount": worker_count,
+                "threadsPerConsole": int(args.threads),
+                "engine": {**expected_engine, "version": version},
+            },
+        )
+    for worker in workers:
+        worker.join()
+    if failures:
+        raise RuntimeError("parallel bundle analysis failed: " + "; ".join(failures))
 
     analyses.sort(key=lambda item: norm(item.get("created")))
     summary = summarize_competition(cache_dir, analyses)
@@ -1507,6 +1566,8 @@ def run_analyze_bundle(args: argparse.Namespace) -> dict[str, Any]:
             "tournamentBundleSha256": file_sha256(tournament_path) if tournament_path else None,
             "tournamentGameCount": sum(bool(item.get("isTournamentGame")) for item in analyses),
             "engine": {**expected_engine, "version": version},
+            "workerCount": worker_count,
+            "threadsPerConsole": int(args.threads),
             "engineRestartCount": restart_count,
         }
     )
@@ -1648,8 +1709,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_bundle.add_argument("--cache-dir", required=True)
     p_bundle.add_argument("--engine", default=str(DEFAULT_ENGINE_EXE))
     p_bundle.add_argument("--level", type=int, default=22)
-    p_bundle.add_argument("--threads", type=int, default=32)
-    p_bundle.add_argument("--hash", type=int, default=26)
+    p_bundle.add_argument("--threads", type=int, default=16)
+    p_bundle.add_argument("--hash", type=int, default=25)
+    p_bundle.add_argument("--workers", type=int, default=2)
     p_bundle.add_argument("--book", default="")
     p_bundle.add_argument("--node-restart", type=int, default=1000)
     return parser
@@ -1665,6 +1727,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(run_analyze_transcript(args), ensure_ascii=False, indent=2))
         return 0
     if args.command == "analyze-bundle":
+        if int(args.workers) <= 0:
+            raise ValueError("--workers must be positive")
         acquire_lock(cache_dir)
         try:
             print(json.dumps(run_analyze_bundle(args), ensure_ascii=False, indent=2))

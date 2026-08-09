@@ -6,9 +6,8 @@
 所有文本输入输出均使用 UTF-8。脚本不会删除输入或既有结果文件；输出路径
 如果需要覆盖，应由使用者先明确处理。
 
-大型公开训练数据不提交到 Git；版本化下载与校验方式见
-[`DATASETS.md`](DATASETS.md)。当前 12-member 主模型作为例外，直接版本化在
-`research/tcn_loss_model/models/primary_wld_ensemble12/`，不含个人适配权重。
+大型公开训练数据和模型不提交到 Git；版本化下载与校验方式见
+[`DATASETS.md`](DATASETS.md)。
 
 ## 文件
 
@@ -613,3 +612,67 @@ Rating 表按组输出样本局数、组内总子损、每盘整局总子损的�
 输入 schema、账号、举报局、对手 `oldR`、模型控制组排除关系或模板占位符有误
 时，脚本会明确报错。所有文本输出为 UTF-8 无 BOM；任一目标 Markdown、数据
 JSON 或目标图片已经存在时，脚本拒绝覆盖。
+
+## 12. 主 Agent 驱动的完整调查流水线
+
+`run_player_investigation.py` 串联棋谱、Player 画像、Level22、hint1/hint6、
+脱谱登记、TCN 数据装配、12 成员个人适配、举报局推理、整局 bootstrap 和经验
+思考时间分析。流水线只生成 JSON/CSV/NPZ 等机器产物，最终报告为
+`report.json`，不生成 Markdown。
+
+主 Agent 首次执行或处理断点恢复时，建议先阅读
+[`docs/PLAYER_INVESTIGATION_AGENT_RUNBOOK.md`](docs/PLAYER_INVESTIGATION_AGENT_RUNBOOK.md)。
+
+先按账号创建调查并拉取所有当前可查询棋谱：
+
+```powershell
+python scripts/analysis/run_player_investigation.py start `
+  --account example_player `
+  --output-dir "C:\path\example-player-investigation"
+```
+
+命令完成后，`progress.json` 状态为 `awaiting_group_selection`，游戏清单位于
+`game_catalog.json`。主 Agent 可以明确列出两组 game ID：
+
+```powershell
+python scripts/analysis/run_player_investigation.py select-groups `
+  --run-dir "C:\path\example-player-investigation" `
+  --reported-game-id game_a `
+  --reported-game-id game_b `
+  --control-game-id game_c `
+  --control-game-id game_d
+```
+
+也可以用 `created` 时间的闭区间选择举报组；区间外所有当前可查询对局自动成为
+对照组。时间必须带 `Z` 或明确 UTC 偏移：
+
+```powershell
+python scripts/analysis/run_player_investigation.py select-groups `
+  --run-dir "C:\path\example-player-investigation" `
+  --reported-from "2026-08-08T21:40:00+08:00" `
+  --reported-to "2026-08-08T23:10:00+08:00"
+```
+
+脚本随后生成 `offbook_packet.json`，并将状态置为 `awaiting_agent_review`。
+主 Agent 必须按包内策略逐局填写 `agent_marks.json`，再提交并自动继续：
+
+```powershell
+python scripts/analysis/run_player_investigation.py submit-marks `
+  --run-dir "C:\path\example-player-investigation" `
+  --marks "C:\path\example-player-investigation\agent_marks.json"
+```
+
+中断后使用 `resume`；查看顶层阶段状态使用 `status`。Level22、hint 和12模型适配
+还会在 `progress.json` 的 `nestedProgress` 字段中暴露原阶段进度文件。已完成
+阶段只有在命令摘要和输出 SHA-256 均一致时才会跳过。举报局若没有可信脱谱锚点，
+不会被强行赋予虚假锚点；该局仍进入常规子损/WLD/时间统计，并使用目标选手
+整局着手参加模型评估。模型报告会列入 `fullGameFallbackNoOffbookGameIds`。
+
+hint 数据走 `safe_recompute_egaroucid_hints.py` 的原子事务入口，不使用 legacy
+并行入口。个人调查的 Level22 固定采用12个独立 worker、每个 Console 16线程、
+hash25；Tournament 直接调用同一 runner 时默认只启用2个 worker。个人调查默认
+hint1 为12个 worker，hint6 为12个独占 worker；hint1 固定1线程且无 book，hint6
+固定 Level18、每引擎16线程并启用 book，两者 hash level 均固定为25。hint6 使用
+batch 128、timeout 900、最多2次尝试，并在完成后执行全量 audit。每个实着节点保留
+请求棋盘、setboard 回显、hint 回显、引擎哈希、request/worker/batch ID；Level22
+逐局原子写入并执行完整棋谱/引擎契约 audit，两类审计通过后才能进入后续阶段。

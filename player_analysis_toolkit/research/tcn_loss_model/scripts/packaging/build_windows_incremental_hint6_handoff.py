@@ -78,6 +78,7 @@ def main() -> int:
         raise ValueError("legacy exact-index audit or reference sample gate failed")
 
     (bundle / "scripts").mkdir(parents=True)
+    copy_tree(ROOT / "src", bundle / "src")
     (bundle / "evidence").mkdir(parents=True)
     (bundle / "audit").mkdir(parents=True)
     copy_tree(SOURCE, bundle / "assets" / "source")

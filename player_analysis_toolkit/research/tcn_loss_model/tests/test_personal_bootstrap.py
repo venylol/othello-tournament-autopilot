@@ -19,6 +19,17 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PersonalBootstrapTests(unittest.TestCase):
+    def test_reported_selection_allows_missing_optional_offbook_anchor(self):
+        MODULE.validate_reported_selection(
+            ["anchored", "no-anchor"], {"anchored": 9}, {"anchored", "no-anchor"}
+        )
+
+    def test_reported_selection_rejects_unaccounted_test_game(self):
+        with self.assertRaisesRegex(ValueError, "do not match"):
+            MODULE.validate_reported_selection(
+                ["anchored"], {"anchored": 9}, {"anchored", "missing"}
+            )
+
     def test_draws_are_deterministic_and_shared_shapes(self):
         members, games = MODULE.bootstrap_draws(100, 12, 2, 123)
         members_again, games_again = MODULE.bootstrap_draws(100, 12, 2, 123)

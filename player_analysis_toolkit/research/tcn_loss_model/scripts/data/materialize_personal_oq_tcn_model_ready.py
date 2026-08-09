@@ -291,6 +291,7 @@ def add_personal_audit_arrays(
                 raw_times[game_index, step] = raw_by_index[move_index]
     target_nodes = np.char.lower(arrays["player_id"].astype(str)) == target
     arrays["mask"] = arrays["mask"].astype(bool) & target_nodes
+    arrays["wld_label_available"] = arrays["wld_label_available"].astype(bool) & arrays["mask"]
     arrays["split"] = np.asarray(["test" if game_id in reported else "train" for game_id in game_ids], dtype="U10")
     arrays["source_time_limit_ms"] = source_limit
     arrays["effective_time_limit_ms"] = effective_limit

@@ -1,0 +1,1050 @@
+#!/usr/bin/env python3
+"""Resumable end-to-end Othello Quest player investigation orchestrator.
+
+The workflow deliberately has two Agent checkpoints:
+
+1. after account games are fetched, the main Agent selects explicit reported and
+   control game IDs, or an inclusive reported-game time range;
+2. after an off-book review packet is created, the main Agent submits one manual
+   judgment per selected game.
+
+All other stages invoke the repository's existing, auditable command-line tools.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+
+
+TOOLKIT_ROOT = Path(__file__).resolve().parents[2]
+MODEL_ROOT = TOOLKIT_ROOT / "research" / "tcn_loss_model"
+PROJECT_ROOT = TOOLKIT_ROOT.parent
+
+SCHEMA_CONFIG = "player-investigation-run-config-v1"
+SCHEMA_PROGRESS = "player-investigation-progress-v1"
+WAITING_EXIT_CODE = 0
+MANUAL_REVIEWER = "agent"
+
+STAGE_ORDER = (
+    "fetch_games",
+    "select_groups",
+    "offbook_packet",
+    "offbook_review",
+    "fetch_profiles",
+    "level22",
+    "hint_source",
+    "hint1",
+    "hint6",
+    "hint_assembly",
+    "model_materialization",
+    "profile_materialization",
+    "adapt_models",
+    "evaluate_reported",
+    "non_model_statistics",
+    "final_report",
+)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    os.replace(temporary, path)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_tree(path: Path) -> str:
+    if path.is_file():
+        return sha256_file(path)
+    digest = hashlib.sha256()
+    for item in sorted((candidate for candidate in path.rglob("*") if candidate.is_file()), key=str):
+        digest.update(item.relative_to(path).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256_file(item).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def command_digest(command: list[str]) -> str:
+    encoded = json.dumps(command, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def require_file(path: Path, label: str) -> Path:
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{label} not found: {resolved}")
+    return resolved
+
+
+def require_directory(path: Path, label: str) -> Path:
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"{label} not found: {resolved}")
+    return resolved
+
+
+def validate_human_opening_book(path: Path) -> Path:
+    resolved = require_file(path, "humanOpeningBook")
+    try:
+        payload = read_json(resolved)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"humanOpeningBook must be a UTF-8 JSON runtime book: {resolved}"
+        ) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), list) or not payload["nodes"]:
+        raise ValueError(f"humanOpeningBook must contain a non-empty nodes array: {resolved}")
+    return resolved
+
+
+def default_paths() -> dict[str, str]:
+    source_snapshot = (
+        MODEL_ROOT
+        / "data"
+        / "oq_elo2000_5min_bilateral_10000_source_only_20260804"
+        / "source_snapshot"
+    )
+    primary = read_json(MODEL_ROOT / "PRIMARY_MODEL.json")
+    return {
+        "python": str(Path(sys.executable).resolve()),
+        "level22Python": str((PROJECT_ROOT / "wechat-decrypt" / ".venv" / "Scripts" / "python.exe").resolve()),
+        "level22Runner": str((PROJECT_ROOT / "wechat-decrypt" / "agent_egaroucid_analysis.py").resolve()),
+        "engine": str((
+            PROJECT_ROOT
+            / "Egaroucid_for_Console_7_8_1_Windows_AVX512_AMD"
+            / "Egaroucid_for_Console_7_8_1_AVX512_AMD.exe"
+        ).resolve()),
+        "baseCheckpoint": str((MODEL_ROOT / primary["baseCheckpoint"]).resolve()),
+        "ensembleManifest": str((MODEL_ROOT / primary["ensembleManifest"]).resolve()),
+        "preprocessing": str((MODEL_ROOT / "provenance" / "source_snapshot" / "preprocessing.json").resolve()),
+        "sourceResearch": str((source_snapshot / "official_research").resolve()),
+        "humanOpeningBook": str((
+            source_snapshot / "othelloquest_human_frequency_nodes_ply1_30_min5.runtime.json"
+        ).resolve()),
+        "profileNormalizationReferenceNpz": str((
+            MODEL_ROOT
+            / "outputs"
+            / "oq_tcn_model_ready_11200_oq_profile_wld_ply39_20260808"
+            / "model_ready_11200_oq_profile_wld_ply39.npz"
+        ).resolve()),
+        "personalConfig": str((MODEL_ROOT / "config" / "personal_finetune.json").resolve()),
+    }
+
+
+def initial_progress(account: str, run_dir: Path) -> dict[str, Any]:
+    return {
+        "schema": SCHEMA_PROGRESS,
+        "account": account,
+        "runDirectory": str(run_dir.resolve()),
+        "status": "initialized",
+        "currentStage": None,
+        "createdAtUtc": utc_now(),
+        "updatedAtUtc": utc_now(),
+        "stages": {
+            name: {"status": "pending", "updatedAtUtc": utc_now()}
+            for name in STAGE_ORDER
+        },
+    }
+
+
+class Run:
+    def __init__(self, run_dir: Path):
+        self.run_dir = run_dir.resolve()
+        self.config_path = self.run_dir / "run_config.json"
+        self.progress_path = self.run_dir / "progress.json"
+        self.config = read_json(self.config_path)
+        self.progress = read_json(self.progress_path)
+        if self.config.get("schema") != SCHEMA_CONFIG:
+            raise ValueError("unsupported run_config.json schema")
+        if self.progress.get("schema") != SCHEMA_PROGRESS:
+            raise ValueError("unsupported progress.json schema")
+
+    def save_config(self) -> None:
+        self.config["updatedAtUtc"] = utc_now()
+        atomic_write_json(self.config_path, self.config)
+
+    def save_progress(self) -> None:
+        terminal = {"completed", "not_applicable"}
+        completed = sum(
+            stage.get("status") in terminal
+            for stage in self.progress.get("stages", {}).values()
+        )
+        total = len(self.progress.get("stages", {}))
+        self.progress["completedStages"] = completed
+        self.progress["totalStages"] = total
+        self.progress["percent"] = round(100.0 * completed / total, 2) if total else 0.0
+        self.progress["updatedAtUtc"] = utc_now()
+        atomic_write_json(self.progress_path, self.progress)
+
+    def set_overall(self, status: str, current_stage: str | None) -> None:
+        self.progress["status"] = status
+        self.progress["currentStage"] = current_stage
+        self.save_progress()
+
+    def set_stage(self, name: str, status: str, **details: Any) -> None:
+        value = self.progress["stages"][name]
+        value.update(details)
+        value["status"] = status
+        value["updatedAtUtc"] = utc_now()
+        self.progress["currentStage"] = name
+        self.progress["status"] = "running" if status == "running" else self.progress["status"]
+        self.save_progress()
+
+    def path(self, name: str) -> Path:
+        return self.run_dir / name
+
+    def python(self) -> str:
+        return str(self.config["paths"]["python"])
+
+    def run_stage(
+        self,
+        name: str,
+        command: list[str],
+        outputs: Iterable[Path],
+        *,
+        cwd: Path = TOOLKIT_ROOT,
+        nested_progress: Path | None = None,
+    ) -> None:
+        output_list = [path.resolve() for path in outputs]
+        digest = command_digest(command)
+        existing = self.progress["stages"][name]
+        if existing.get("status") == "completed":
+            if existing.get("commandSha256") != digest:
+                raise ValueError(f"completed stage {name} command changed; create a new run directory")
+            if not all(path.exists() for path in output_list):
+                raise FileNotFoundError(f"completed stage {name} is missing an output")
+            actual = {str(path): sha256_tree(path) for path in output_list}
+            if actual != existing.get("outputSha256"):
+                raise ValueError(f"completed stage {name} output hash changed")
+            return
+        self.set_stage(
+            name,
+            "running",
+            command=command,
+            commandSha256=digest,
+            startedAtUtc=utc_now(),
+            nestedProgress=str(nested_progress.resolve()) if nested_progress else None,
+        )
+        environment = os.environ.copy()
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8"
+        completed = subprocess.run(command, cwd=cwd, env=environment, check=False)
+        if completed.returncode != 0:
+            self.set_stage(name, "failed", returnCode=completed.returncode, failedAtUtc=utc_now())
+            self.set_overall("failed", name)
+            raise subprocess.CalledProcessError(completed.returncode, command)
+        missing = [str(path) for path in output_list if not path.exists()]
+        if missing:
+            self.set_stage(name, "failed", error=f"missing outputs: {missing}")
+            self.set_overall("failed", name)
+            raise FileNotFoundError(f"stage {name} did not create outputs: {missing}")
+        self.set_stage(
+            name,
+            "completed",
+            completedAtUtc=utc_now(),
+            returnCode=0,
+            outputs=[str(path) for path in output_list],
+            outputSha256={str(path): sha256_tree(path) for path in output_list},
+        )
+
+
+def details(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    value = bundle.get("details")
+    if not isinstance(value, list) or not value:
+        raise ValueError("account bundle contains no game details")
+    return value
+
+
+def player_ids(detail: dict[str, Any]) -> tuple[str, str]:
+    players = detail.get("players") or []
+    if len(players) < 2:
+        raise ValueError(f"game {detail.get('id')} has fewer than two players")
+    return str(players[0].get("id") or ""), str(players[1].get("id") or "")
+
+
+def game_catalog(bundle: dict[str, Any], account: str) -> list[dict[str, Any]]:
+    rows = []
+    target = account.casefold()
+    for detail in sorted(details(bundle), key=lambda item: (str(item.get("created") or ""), str(item.get("id") or ""))):
+        black, white = player_ids(detail)
+        if target not in {black.casefold(), white.casefold()}:
+            continue
+        target_color = "black" if black.casefold() == target else "white"
+        rows.append({
+            "gameId": str(detail.get("id") or ""),
+            "created": detail.get("created"),
+            "timeLimitMs": int(detail.get("tcb", 0) or 0),
+            "targetColor": target_color,
+            "opponentAccount": white if target_color == "black" else black,
+            "blackAccount": black,
+            "whiteAccount": white,
+            "sourceMoveCount": len((detail.get("position") or {}).get("moves") or []),
+        })
+    if not rows:
+        raise ValueError(f"bundle contains no games for account {account!r}")
+    return rows
+
+
+def write_games_metadata(path: Path, selected_details: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("game_id", "created", "black_id", "white_id"))
+        writer.writeheader()
+        for detail in sorted(selected_details, key=lambda item: str(item.get("created") or "")):
+            black, white = player_ids(detail)
+            writer.writerow({
+                "game_id": str(detail["id"]),
+                "created": str(detail.get("created") or ""),
+                "black_id": black,
+                "white_id": white,
+            })
+
+
+def selected_bundle(source: dict[str, Any], selected_ids: set[str]) -> dict[str, Any]:
+    selected_details = [item for item in details(source) if str(item.get("id") or "") in selected_ids]
+    selected_index = [item for item in source.get("index", []) if str(item.get("id") or "") in selected_ids]
+    result = dict(source)
+    result["schema"] = "oq-account-bundle-selected-investigation-v1"
+    result["selection"] = {"gameIds": sorted(selected_ids), "sourceBundleSchema": source.get("schema")}
+    result["details"] = selected_details
+    result["index"] = selected_index
+    return result
+
+
+def create_run(args: argparse.Namespace) -> Run:
+    run_dir = args.output_dir.resolve()
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise FileExistsError(f"run directory is not empty: {run_dir}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config = {
+        "schema": SCHEMA_CONFIG,
+        "account": args.account,
+        "mode": args.mode,
+        "createdAtUtc": utc_now(),
+        "updatedAtUtc": utc_now(),
+        "reportedGameIds": [],
+        "controlGameIds": [],
+        "excludedGameIds": [],
+        "parameters": {
+            "bootstrapReplicates": args.bootstrap,
+            "modelBootstrapReplicates": args.model_bootstrap,
+            "bootstrapSeed": args.seed,
+            "modelBootstrapSeed": args.model_seed,
+            "effectiveTimeLimitMs": 300000,
+            "profilePolicy": "retrospective-current-profile-trusted-temporal-leakage-v1",
+            "device": args.device,
+            "level22Threads": args.level22_threads,
+            "level22Hash": args.level22_hash,
+            "level22Workers": args.level22_workers,
+            "hint1Workers": args.hint1_workers,
+            "hint6Workers": args.hint6_workers,
+            "hintHashLevel": 25,
+            "featureWorkers": args.feature_workers,
+        },
+        "paths": default_paths(),
+    }
+    for key in (
+        "engine", "level22_python", "level22_runner", "base_checkpoint",
+        "ensemble_manifest", "profile_normalization_reference_npz",
+    ):
+        value = getattr(args, key, None)
+        if value:
+            config["paths"][{
+                "level22_python": "level22Python",
+                "level22_runner": "level22Runner",
+                "base_checkpoint": "baseCheckpoint",
+                "ensemble_manifest": "ensembleManifest",
+                "profile_normalization_reference_npz": "profileNormalizationReferenceNpz",
+            }.get(key, key)] = str(value.resolve())
+    atomic_write_json(run_dir / "run_config.json", config)
+    atomic_write_json(run_dir / "progress.json", initial_progress(args.account, run_dir))
+    return Run(run_dir)
+
+
+def fetch_games(run: Run, source_bundle: Path | None = None) -> None:
+    bundle_path = run.path("account_bundle.json")
+    if source_bundle is not None:
+        if bundle_path.exists():
+            raise FileExistsError(bundle_path)
+        source = read_json(require_file(source_bundle, "source account bundle"))
+        atomic_write_json(bundle_path, source)
+        run.set_stage(
+            "fetch_games", "completed", source="provided-bundle", outputs=[str(bundle_path)],
+            outputSha256={str(bundle_path.resolve()): sha256_file(bundle_path)}, completedAtUtc=utc_now(),
+        )
+    else:
+        command = [
+            run.python(), str(TOOLKIT_ROOT / "scripts" / "data" / "oq_account_bundle.py"),
+            "--account", run.config["account"], "--mode", run.config["mode"],
+            "--output", str(bundle_path),
+        ]
+        run.run_stage("fetch_games", command, [bundle_path])
+    bundle = read_json(bundle_path)
+    catalog = game_catalog(bundle, run.config["account"])
+    atomic_write_json(run.path("game_catalog.json"), {
+        "schema": "player-investigation-game-catalog-v1",
+        "account": run.config["account"], "gameCount": len(catalog), "games": catalog,
+    })
+    fetch_stage = run.progress["stages"]["fetch_games"]
+    fetch_outputs = [bundle_path.resolve(), run.path("game_catalog.json").resolve()]
+    fetch_stage["gameCount"] = len(catalog)
+    fetch_stage["outputs"] = [str(path) for path in fetch_outputs]
+    fetch_stage["outputSha256"] = {str(path): sha256_file(path) for path in fetch_outputs}
+    run.save_progress()
+    run.set_stage("select_groups", "awaiting_agent", instructions={
+        "catalog": str(run.path("game_catalog.json")),
+        "commands": [
+            "select-groups --run-dir ... --reported-game-id ID --control-game-id ID",
+            "select-groups --run-dir ... --reported-from ISO8601 --reported-to ISO8601",
+        ],
+        "policy": (
+            "Both groups must be non-empty and disjoint. Explicit selection excludes unselected games; "
+            "time-range selection reports every game in the inclusive created-time range and controls every other game."
+        ),
+    })
+    run.set_overall("awaiting_group_selection", "select_groups")
+
+
+def parse_aware_datetime(value: str, label: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} must include Z or an explicit UTC offset")
+    return parsed.astimezone(timezone.utc)
+
+
+def groups_from_time_range(run: Run, start: str, stop: str) -> tuple[list[str], list[str], dict[str, Any]]:
+    lower = parse_aware_datetime(start, "--reported-from")
+    upper = parse_aware_datetime(stop, "--reported-to")
+    if lower > upper:
+        raise ValueError("--reported-from must not be later than --reported-to")
+    catalog = read_json(run.path("game_catalog.json"))["games"]
+    reported, control = [], []
+    for game in catalog:
+        created = parse_aware_datetime(str(game.get("created") or ""), f"game {game['gameId']} created")
+        (reported if lower <= created <= upper else control).append(str(game["gameId"]))
+    return reported, control, {
+        "method": "inclusive-created-time-range",
+        "reportedFrom": lower.isoformat().replace("+00:00", "Z"),
+        "reportedTo": upper.isoformat().replace("+00:00", "Z"),
+        "boundaryPolicy": "reportedFrom <= game.created <= reportedTo",
+        "sourceTimeField": "created",
+    }
+
+
+def select_groups(
+    run: Run,
+    reported: list[str],
+    control: list[str],
+    selection: dict[str, Any] | None = None,
+) -> None:
+    reported_ids, control_ids = set(reported), set(control)
+    if not reported_ids or not control_ids:
+        raise ValueError("reported and control groups must both be non-empty")
+    overlap = sorted(reported_ids & control_ids)
+    if overlap:
+        raise ValueError(f"reported/control groups overlap: {overlap}")
+    previous = run.progress["stages"]["select_groups"]
+    if previous.get("status") == "completed":
+        same = (
+            sorted(reported_ids) == previous.get("reportedGameIds")
+            and sorted(control_ids) == previous.get("controlGameIds")
+        )
+        if same:
+            return
+        raise ValueError("groups are already frozen; create a new run directory to change them")
+    source = read_json(run.path("account_bundle.json"))
+    available = {str(item.get("id") or "") for item in details(source)}
+    missing = sorted((reported_ids | control_ids) - available)
+    if missing:
+        raise ValueError(f"selected game IDs are absent from account bundle: {missing}")
+    selected_ids = reported_ids | control_ids
+    filtered = selected_bundle(source, selected_ids)
+    filtered_path = run.path("selected_account_bundle.json")
+    atomic_write_json(filtered_path, filtered)
+    write_games_metadata(run.path("games_metadata.csv"), details(filtered))
+    run.config["reportedGameIds"] = sorted(reported_ids)
+    run.config["controlGameIds"] = sorted(control_ids)
+    run.config["excludedGameIds"] = sorted(available - selected_ids)
+    run.config["groupSelection"] = selection or {
+        "method": "explicit-game-ids",
+        "reportedGameIds": sorted(reported_ids),
+        "controlGameIds": sorted(control_ids),
+    }
+    run.save_config()
+    run.set_stage(
+        "select_groups", "completed", reportedGameIds=sorted(reported_ids),
+        controlGameIds=sorted(control_ids), excludedGameIds=sorted(available - selected_ids),
+        selection=run.config["groupSelection"],
+        outputs=[str(filtered_path), str(run.path("games_metadata.csv"))],
+        outputSha256={
+            str(filtered_path.resolve()): sha256_file(filtered_path),
+            str(run.path("games_metadata.csv").resolve()): sha256_file(run.path("games_metadata.csv")),
+        },
+        completedAtUtc=utc_now(),
+    )
+    run.set_overall("ready", "fetch_profiles")
+
+
+def selected_accounts(run: Run) -> list[str]:
+    bundle = read_json(run.path("selected_account_bundle.json"))
+    accounts = {value for item in details(bundle) for value in player_ids(item) if value}
+    return sorted(accounts, key=str.casefold)
+
+
+def resumable_attempt_directory(run: Run, config_key: str, preferred_name: str, stage: str) -> Path:
+    runtime = run.config.setdefault("runtimePaths", {})
+    if config_key in runtime:
+        current = Path(runtime[config_key])
+        if run.progress["stages"][stage].get("status") != "failed":
+            return current
+        if not current.exists():
+            return current
+    else:
+        current = run.path(preferred_name)
+        if not current.exists():
+            runtime[config_key] = str(current)
+            run.save_config()
+            return current
+    index = 2
+    while True:
+        candidate = run.path(f"{preferred_name}_attempt_{index}")
+        if not candidate.exists():
+            runtime[config_key] = str(candidate)
+            run.save_config()
+            return candidate
+        index += 1
+
+
+def run_pre_review(run: Run) -> None:
+    if not run.config.get("reportedGameIds") or not run.config.get("controlGameIds"):
+        run.set_overall("awaiting_group_selection", "select_groups")
+        raise RuntimeError("explicit groups have not been selected")
+    paths, parameters = run.config["paths"], run.config["parameters"]
+    selected = run.path("selected_account_bundle.json")
+    packet = run.path("offbook_packet.json")
+    packet_command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "review" / "agent_offbook_review.py"),
+        "offbook-packet", "--bundle", str(selected), "--account", run.config["account"],
+        "--mode", "target", "--output", str(packet),
+    ]
+    for game_id in run.config["reportedGameIds"]:
+        packet_command.extend(["--exclude-from-book-game-id", game_id])
+    run.run_stage("offbook_packet", packet_command, [packet])
+    marks_template = run.path("agent_marks.template.json")
+    packet_value = read_json(packet)
+    atomic_write_json(marks_template, {
+        "schema": "player-offbook-agent-marks-input-v1",
+        "account": run.config["account"], "mode": "target", "reviewedBy": MANUAL_REVIEWER,
+        "marks": [
+            {"gameId": game["gameId"], "judgment": "offbook", "offBookPly": None, "agentNote": ""}
+            for game in packet_value["games"]
+        ],
+    })
+    run.set_stage("offbook_review", "awaiting_agent", instructions={
+        "packet": str(packet), "marksTemplate": str(marks_template),
+        "policy": packet_value.get("manualReviewPolicy"),
+        "command": "submit-marks --run-dir ... --marks agent_marks.json",
+        "parallelism": "The packet is ready before profile and Level22 work, so the main Agent may review it while those stages run.",
+    })
+
+    profiles = run.path("profiles")
+    profile_command = [
+        run.python(), str(MODEL_ROOT / "scripts" / "data" / "fetch_oq_player_profiles.py"),
+        "fetch", "--output-dir", str(profiles), "--concurrency", "1", "--resume",
+    ]
+    for account in selected_accounts(run):
+        profile_command.extend(["--account", account])
+    run.run_stage("fetch_profiles", profile_command, [profiles])
+
+    engine_dir = run.path("engine_level22")
+    level_command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "data" / "run_egaroucid_bundle.py"),
+        "--bundle", str(selected), "--output-dir", str(engine_dir),
+        "--runner", paths["level22Runner"], "--python", paths["level22Python"],
+        "--engine", paths["engine"], "--level", "22",
+        "--threads", str(parameters["level22Threads"]), "--hash", str(parameters["level22Hash"]),
+        "--workers", str(parameters["level22Workers"]),
+        "--wld-from-ply", "39", "--resume",
+    ]
+    run.run_stage("level22", level_command, [engine_dir], nested_progress=engine_dir / "progress.json")
+
+    run_safe_hints(run)
+    run.set_overall("awaiting_agent_review", "offbook_review")
+
+
+def run_safe_hints(run: Run) -> None:
+    paths, parameters = run.config["paths"], run.config["parameters"]
+    selected = run.path("selected_account_bundle.json")
+    hint_source = run.path("hint_source")
+    source_command = [
+        run.python(), str(MODEL_ROOT / "scripts" / "data" / "build_personal_hint_source_from_bundle.py"),
+        "--account-bundle", str(selected), "--target-player", run.config["account"],
+        "--analyzer-module", str(TOOLKIT_ROOT / "scripts" / "data" / "pass_aware_othello_board.py"),
+        "--output-dir", str(hint_source),
+    ]
+    for game_id in run.config["reportedGameIds"]:
+        source_command.extend(["--reported-game", game_id])
+    run.run_stage(
+        "hint_source", source_command,
+        [hint_source],
+    )
+    shape = read_json(hint_source / "source_manifest.json")["shape"]
+    source_csv = hint_source / "raw_nodes_with_pass.csv"
+    safe_runner = MODEL_ROOT / "scripts" / "pipeline" / "safe_recompute_egaroucid_hints.py"
+    safe_stage_runner = TOOLKIT_ROOT / "scripts" / "data" / "run_safe_hint_stage.py"
+    hints = run.path("hints")
+
+    def run_hint(stage: str, workers: int, batch_size: int, timeout: int) -> None:
+        output = hints / stage
+        command = [
+            run.python(), str(safe_stage_runner), "--runner", str(safe_runner),
+            "--source-csv", str(source_csv),
+            "--stage", stage, "--engine", paths["engine"], "--output-dir", str(output),
+            "--workers", str(workers), "--hash-level", str(parameters["hintHashLevel"]),
+            "--batch-size", str(batch_size), "--timeout", str(timeout), "--max-attempts", "2",
+            "--expected", str(shape["placements"]), "--resume",
+        ]
+        run.run_stage(stage, command, [output], nested_progress=output / "progress.json")
+
+    run_hint("hint1", int(parameters["hint1Workers"]), 64, 60)
+    run_hint("hint6", int(parameters["hint6Workers"]), 128, 900)
+
+    assembled = hints / "assembled_nodes.csv"
+    assembly_manifest = hints / "assembly_manifest.json"
+    assembly_command = [
+        run.python(), str(MODEL_ROOT / "scripts" / "pipeline" / "assemble_safe_hint_recompute.py"),
+        "--source-csv", str(source_csv), "--hint1-dir", str(hints / "hint1"),
+        "--hint6-dir", str(hints / "hint6"), "--output-csv", str(assembled),
+        "--output-manifest", str(assembly_manifest), "--merge-index", str(hints / "merge_index.sqlite3"),
+        "--expected-rows", str(shape["rows"]), "--expected-placements", str(shape["placements"]),
+        "--expected-passes", str(shape["passes"]), "--expected-games", str(shape["games"]),
+    ]
+    run.run_stage("hint_assembly", assembly_command, [assembled, assembly_manifest, hints / "merge_index.sqlite3"])
+
+
+def submit_marks(run: Run, source_marks: Path) -> None:
+    marks_value = read_json(require_file(source_marks, "Agent marks"))
+    marks_path = run.path("agent_marks.json")
+    if marks_path.exists() and read_json(marks_path) != marks_value:
+        raise ValueError("submitted marks differ from the already recorded Agent marks")
+    if not marks_path.exists():
+        atomic_write_json(marks_path, marks_value)
+    records = run.path("offbook_records.json")
+    command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "review" / "agent_offbook_review.py"),
+        "offbook-record", "--packet", str(run.path("offbook_packet.json")),
+        "--marks", str(marks_path), "--output", str(records),
+    ]
+    run.run_stage("offbook_review", command, [marks_path, records])
+    run.set_overall("ready", "model_materialization")
+
+
+def offbook_map(run: Run) -> tuple[dict[str, int], list[str]]:
+    records = read_json(run.path("offbook_records.json"))["records"]
+    reported = set(run.config["reportedGameIds"])
+    anchors = {
+        str(row["gameId"]): int(row["offBookPly"])
+        for row in records
+        if row["gameId"] in reported and row["judgment"] == "offbook"
+    }
+    no_anchor = sorted(reported - set(anchors))
+    return anchors, no_anchor
+
+
+def run_post_review(run: Run) -> None:
+    if not run.path("offbook_records.json").is_file():
+        run.set_overall("awaiting_agent_review", "offbook_review")
+        raise RuntimeError("validated off-book records are required")
+    paths, parameters = run.config["paths"], run.config["parameters"]
+    anchors, no_anchor = offbook_map(run)
+    selected = run.path("selected_account_bundle.json")
+    model_base = run.path("model_data_base")
+    materialize = [
+        run.python(), str(MODEL_ROOT / "scripts" / "data" / "materialize_personal_oq_tcn_model_ready.py"),
+        "--account-bundle", str(selected), "--target-player", run.config["account"],
+        "--output-dir", str(model_base), "--base-checkpoint", paths["baseCheckpoint"],
+        "--preprocessing", paths["preprocessing"], "--source-research", paths["sourceResearch"],
+        "--human-opening-book", paths["humanOpeningBook"],
+        "--safe-assembled-raw", str(run.path("hints") / "assembled_nodes.csv"),
+        "--safe-assembly-manifest", str(run.path("hints") / "assembly_manifest.json"),
+        "--feature-workers", str(parameters["featureWorkers"]),
+    ]
+    for game_id in run.config["reportedGameIds"]:
+        materialize.extend(["--reported-game", game_id])
+    for game_id, ply in sorted(anchors.items()):
+        materialize.extend(["--offbook-ply", f"{game_id}={ply}"])
+    run.run_stage(
+        "model_materialization", materialize,
+        [model_base / "personal_model_ready.npz", model_base / "personal_model_ready_manifest.json"],
+    )
+
+    profile_dir = resumable_attempt_directory(
+        run, "profileModelDirectory", "model_data_profile", "profile_materialization"
+    )
+    profile_name = "personal_model_ready_profile.npz"
+    profile_command = [
+        run.python(), str(MODEL_ROOT / "scripts" / "data" / "materialize_oq_profile_context.py"),
+        "--input-npz", str(model_base / "personal_model_ready.npz"),
+        "--games", str(run.path("hint_source") / "games.csv"), "--snapshots-dir", str(run.path("profiles")),
+        "--output-dir", str(profile_dir), "--output-name", profile_name,
+        "--policy", parameters["profilePolicy"], "--allow-temporal-leakage",
+        "--normalization-reference-npz", paths["profileNormalizationReferenceNpz"],
+    ]
+    profile_npz = profile_dir / profile_name
+    run.run_stage(
+        "profile_materialization", profile_command,
+        [profile_dir],
+    )
+
+    adapters = run.path("model") / "adapters"
+    adapt_command = [
+        run.python(), str(MODEL_ROOT / "train.py"), "personalize-ensemble",
+        "--data", str(profile_npz), "--ensemble-manifest", paths["ensembleManifest"],
+        "--base-checkpoint", paths["baseCheckpoint"], "--config", paths["personalConfig"],
+        "--output-dir", str(adapters),
+    ]
+    run.run_stage(
+        "adapt_models", adapt_command, [adapters],
+        cwd=MODEL_ROOT, nested_progress=adapters / "personal_ensemble_progress.json",
+    )
+
+    evaluation_dir = run.path("model") / "evaluation"
+    eligible = sorted(anchors)
+    if run.config["reportedGameIds"]:
+        evaluation = [
+            run.python(), str(MODEL_ROOT / "scripts" / "modeling" / "evaluate_personal_tcn_ensemble.py"),
+            "--data", str(profile_npz),
+            "--personal-ensemble-manifest", str(adapters / "personal_ensemble_manifest.json"),
+            "--base-checkpoint", paths["baseCheckpoint"],
+            "--node-output", str(evaluation_dir / "reported_node_predictions.csv"),
+            "--summary-output", str(evaluation_dir / "reported_bootstrap_summary.json"),
+            "--control-calibration-output", str(evaluation_dir / "control_adaptation_calibration.json"),
+            "--bootstrap-replicates", str(parameters["bootstrapReplicates"]),
+            "--bootstrap-seed", str(parameters["modelBootstrapSeed"]),
+            "--device", parameters["device"],
+        ]
+        for game_id in run.config["reportedGameIds"]:
+            evaluation.extend(["--reported-game", game_id])
+            if game_id in anchors:
+                evaluation.extend(["--offbook-ply", f"{game_id}={anchors[game_id]}"])
+        run.run_stage(
+            "evaluate_reported", evaluation,
+            [evaluation_dir],
+        )
+        run.progress["stages"]["evaluate_reported"]["modelEligibleReportedGameIds"] = sorted(run.config["reportedGameIds"])
+        run.progress["stages"]["evaluate_reported"]["fullGameFallbackNoOffbookGameIds"] = no_anchor
+        run.progress["stages"]["evaluate_reported"]["excludedNoOffbookGameIds"] = []
+        run.save_progress()
+    else:
+        run.set_stage(
+            "evaluate_reported", "not_applicable", modelEligibleReportedGameIds=[],
+            excludedNoOffbookGameIds=no_anchor,
+            reason="No reported game received a defensible off-book anchor; model evaluation was not fabricated.",
+        )
+
+    analysis_dir = run.path("non_model")
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    analysis_config = {
+        "outputDirectory": str(analysis_dir), "bundle": str(selected),
+        "engineDirectory": str(run.path("engine_level22")), "account": run.config["account"],
+        "reportedGameIds": run.config["reportedGameIds"],
+        "bootstrap": parameters["bootstrapReplicates"],
+        "modelBootstrap": parameters["modelBootstrapReplicates"],
+        "seed": parameters["bootstrapSeed"], "wldFromPly": 39,
+    }
+    analysis_config_path = run.path("non_model_analysis_config.json")
+    atomic_write_json(analysis_config_path, analysis_config)
+    non_model_command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "player_analysis.py"),
+        "run-all", "--config", str(analysis_config_path),
+    ]
+    run.run_stage(
+        "non_model_statistics", non_model_command,
+        [analysis_dir],
+    )
+    build_final_report(run, anchors, no_anchor)
+
+
+def artifact_entry(path: Path) -> dict[str, Any]:
+    return {"path": str(path.resolve()), "sha256": sha256_tree(path)}
+
+
+def build_final_report(run: Run, anchors: dict[str, int], no_anchor: list[str]) -> None:
+    report_path = run.path("report.json")
+    evaluation = run.path("model") / "evaluation"
+    model_summary = evaluation / "reported_bootstrap_summary.json"
+    calibration = evaluation / "control_adaptation_calibration.json"
+    profile_dir = Path(run.config.get("runtimePaths", {}).get(
+        "profileModelDirectory", str(run.path("model_data_profile"))
+    ))
+    profile_manifest = profile_dir / "oq_profile_materialization_manifest.json"
+    report = {
+        "schema": "player-investigation-json-report-v1",
+        "status": "completed",
+        "generatedAtUtc": utc_now(),
+        "account": run.config["account"],
+        "groups": {
+            "reportedGameIds": run.config["reportedGameIds"],
+            "controlGameIds": run.config["controlGameIds"],
+            "excludedGameIds": run.config["excludedGameIds"],
+            "selection": run.config.get("groupSelection"),
+        },
+        "offbook": {
+            "anchorsInclusiveGlobalPlacementPly": anchors,
+            "reportedGamesWithoutAnchor": no_anchor,
+            "records": read_json(run.path("offbook_records.json")),
+        },
+        "nonModel": {
+            "lossAndWld": read_json(run.path("non_model") / "loss-analysis.json"),
+            "thinkingTime": read_json(run.path("non_model") / "time-analysis.json"),
+        },
+        "model": {
+            "eligibleReportedGameIds": sorted(run.config["reportedGameIds"]),
+            "fullGameFallbackNoOffbookGameIds": no_anchor,
+            "excludedNoOffbookGameIds": [],
+            "reportedBootstrap": read_json(model_summary) if model_summary.is_file() else None,
+            "controlAdaptationCalibration": read_json(calibration) if calibration.is_file() else None,
+            "profileMaterialization": read_json(profile_manifest),
+        },
+        "parameters": run.config["parameters"],
+        "artifacts": {
+            "sourceBundle": artifact_entry(run.path("account_bundle.json")),
+            "selectedBundle": artifact_entry(run.path("selected_account_bundle.json")),
+            "profiles": artifact_entry(run.path("profiles")),
+            "level22": artifact_entry(run.path("engine_level22")),
+            "safeHints": artifact_entry(run.path("hints")),
+            "modelReady": artifact_entry(profile_dir / "personal_model_ready_profile.npz"),
+            "personalEnsemble": artifact_entry(run.path("model") / "adapters" / "personal_ensemble_manifest.json"),
+        },
+        "limitations": [
+            "Statistical intervals and p-values are not cheating probabilities.",
+            "Current cumulative Player profiles are retrospective and may include information accumulated after the games.",
+            "Reported games without a defensible off-book anchor use all target-player moves in model evaluation; no synthetic anchor is assigned.",
+        ],
+    }
+    atomic_write_json(report_path, report)
+    run.set_stage(
+        "final_report", "completed", outputs=[str(report_path)],
+        outputSha256={str(report_path.resolve()): sha256_file(report_path)}, completedAtUtc=utc_now(),
+    )
+    run.set_overall("completed", None)
+
+
+def validate_paths(config: dict[str, Any]) -> None:
+    paths = config["paths"]
+    for key in (
+        "python", "level22Python", "level22Runner", "engine",
+        "baseCheckpoint", "ensembleManifest", "preprocessing",
+        "profileNormalizationReferenceNpz", "personalConfig",
+    ):
+        require_file(Path(paths[key]), key)
+    validate_human_opening_book(Path(paths["humanOpeningBook"]))
+    require_directory(Path(paths["sourceResearch"]), "sourceResearch")
+    ensemble = read_json(Path(paths["ensembleManifest"]))
+    members = ensemble.get("members") if isinstance(ensemble.get("members"), list) else []
+    if ensemble.get("status") != "completed" or len(members) != 12:
+        raise ValueError("the investigation requires one completed 12-member ensemble manifest")
+    parameters = config["parameters"]
+    for key in (
+        "bootstrapReplicates", "modelBootstrapReplicates", "level22Threads", "level22Workers",
+        "hint1Workers", "hint6Workers", "featureWorkers",
+    ):
+        if int(parameters[key]) <= 0:
+            raise ValueError(f"{key} must be positive")
+    if int(parameters["hintHashLevel"]) != 25:
+        raise ValueError("safe personal hint recomputation requires hash level 25")
+    fixed_parallel = {
+        "level22Workers": 12,
+        "level22Threads": 16,
+        "level22Hash": 25,
+        "hint6Workers": 12,
+    }
+    for key, expected in fixed_parallel.items():
+        if int(parameters[key]) != expected:
+            raise ValueError(f"player investigation requires {key}={expected}")
+
+
+def command_start(args: argparse.Namespace) -> int:
+    run = create_run(args)
+    validate_paths(run.config)
+    fetch_games(run, args.bundle)
+    print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
+    return WAITING_EXIT_CODE
+
+
+def command_select(args: argparse.Namespace) -> int:
+    run = Run(args.run_dir)
+    explicit = bool(args.reported_game_id or args.control_game_id)
+    ranged = bool(args.reported_from or args.reported_to)
+    if explicit and ranged:
+        raise ValueError("explicit game IDs and the reported time range are mutually exclusive")
+    if explicit:
+        if not args.reported_game_id or not args.control_game_id:
+            raise ValueError("explicit selection requires both --reported-game-id and --control-game-id")
+        reported, control = args.reported_game_id, args.control_game_id
+        selection = None
+    elif ranged:
+        if not args.reported_from or not args.reported_to:
+            raise ValueError("time-range selection requires both --reported-from and --reported-to")
+        reported, control, selection = groups_from_time_range(run, args.reported_from, args.reported_to)
+    else:
+        raise ValueError("provide explicit game IDs or an inclusive reported time range")
+    select_groups(run, reported, control, selection)
+    run_pre_review(run)
+    print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
+    return WAITING_EXIT_CODE
+
+
+def command_submit(args: argparse.Namespace) -> int:
+    run = Run(args.run_dir)
+    submit_marks(run, args.marks)
+    if not args.no_continue:
+        run_post_review(run)
+    print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_resume(args: argparse.Namespace) -> int:
+    run = Run(args.run_dir)
+    status = run.progress["status"]
+    if status == "completed":
+        print(json.dumps(run.progress, ensure_ascii=False, indent=2))
+        return 0
+    if status == "awaiting_group_selection":
+        print(json.dumps(run.progress, ensure_ascii=False, indent=2))
+        return WAITING_EXIT_CODE
+    pre_review_stages = (
+        "offbook_packet", "fetch_profiles", "level22", "hint_source", "hint1", "hint6", "hint_assembly"
+    )
+    if any(run.progress["stages"][name].get("status") != "completed" for name in pre_review_stages):
+        run_pre_review(run)
+        return WAITING_EXIT_CODE
+    if not run.path("offbook_records.json").is_file():
+        run.set_overall("awaiting_agent_review", "offbook_review")
+        print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
+        return WAITING_EXIT_CODE
+    run_post_review(run)
+    print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_status(args: argparse.Namespace) -> int:
+    run = Run(args.run_dir)
+    print(json.dumps(run.progress, ensure_ascii=False, indent=2))
+    return 0
+
+
+def add_run_dir(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--run-dir", type=Path, required=True)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    start = commands.add_parser("start", help="fetch games and wait for Agent group selection")
+    start.add_argument("--account", required=True)
+    start.add_argument("--output-dir", type=Path, required=True)
+    start.add_argument("--mode", default="5min", choices=("5min",))
+    start.add_argument("--bundle", type=Path, help="use an existing account bundle instead of a network fetch")
+    start.add_argument("--bootstrap", type=int, default=10_000)
+    start.add_argument("--model-bootstrap", type=int, default=1_000)
+    start.add_argument("--seed", type=int, default=20260801)
+    start.add_argument("--model-seed", type=int, default=20260809)
+    start.add_argument("--device", default="cuda:0")
+    start.add_argument("--level22-threads", type=int, default=16)
+    start.add_argument("--level22-hash", type=int, default=25)
+    start.add_argument("--level22-workers", type=int, default=12)
+    start.add_argument("--hint1-workers", type=int, default=12)
+    start.add_argument("--hint6-workers", type=int, default=12)
+    start.add_argument("--feature-workers", type=int, default=12)
+    start.add_argument("--engine", type=Path)
+    start.add_argument("--level22-python", type=Path)
+    start.add_argument("--level22-runner", type=Path)
+    start.add_argument("--base-checkpoint", type=Path)
+    start.add_argument("--ensemble-manifest", type=Path)
+    start.add_argument("--profile-normalization-reference-npz", type=Path)
+    start.set_defaults(handler=command_start)
+
+    select = commands.add_parser("select-groups", help="record explicit IDs or an inclusive time range, then prepare review")
+    add_run_dir(select)
+    select.add_argument("--reported-game-id", action="append", default=[])
+    select.add_argument("--control-game-id", action="append", default=[])
+    select.add_argument(
+        "--reported-from",
+        help="inclusive ISO 8601 lower bound with Z or an explicit UTC offset",
+    )
+    select.add_argument(
+        "--reported-to",
+        help="inclusive ISO 8601 upper bound with Z or an explicit UTC offset",
+    )
+    select.set_defaults(handler=command_select)
+
+    submit = commands.add_parser("submit-marks", help="validate main-Agent off-book marks and continue")
+    add_run_dir(submit)
+    submit.add_argument("--marks", type=Path, required=True)
+    submit.add_argument("--no-continue", action="store_true")
+    submit.set_defaults(handler=command_submit)
+
+    resume = commands.add_parser("resume", help="resume the first incomplete non-Agent stage")
+    add_run_dir(resume)
+    resume.set_defaults(handler=command_resume)
+
+    status = commands.add_parser("status", help="print the top-level progress JSON")
+    add_run_dir(status)
+    status.set_defaults(handler=command_status)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return int(args.handler(args))
+    except Exception as exc:
+        run_dir = getattr(args, "run_dir", None) or getattr(args, "output_dir", None)
+        if run_dir and (Path(run_dir) / "progress.json").is_file():
+            run = Run(Path(run_dir))
+            run.progress["lastError"] = {"type": type(exc).__name__, "message": str(exc), "atUtc": utc_now()}
+            if run.progress["status"] not in {"awaiting_group_selection", "awaiting_agent_review"}:
+                run.progress["status"] = "failed"
+            run.save_progress()
+        raise
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

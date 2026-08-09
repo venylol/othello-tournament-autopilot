@@ -1,0 +1,8 @@
+# Local-only Egaroucid board-CNN training data and generated binary shards.
+/research/tcn_loss_model/data/egaroucid_7_5_1_lv17/
+/research/tcn_loss_model/data/board_cnn_pretrain_shards/
+/research/tcn_loss_model/data/board_cnn_pretrain_smoke_shards/
+/research/tcn_loss_model/data/board_cnn_cpp_validation_shards/
+/research/tcn_loss_model/outputs/board_cnn_pretrain*/
+/research/tcn_loss_model/tools/board_cnn_materializer/*.exe
+/research/tcn_loss_model/tools/board_cnn_materializer/*.obj
