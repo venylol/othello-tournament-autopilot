@@ -178,7 +178,7 @@ def main() -> int:
         "recordCount": len(consolidated_records),
         "offBookRecordCount": sum(row["judgment"] == "offbook" for row in rows),
         "noOffBookRecordCount": sum(row["judgment"] == "no_offbook" for row in rows),
-        "validationTool": "scripts/review/agent_offbook_review.py offbook-record",
+        "validationTool": "legacy-reference-records",
         "sourceRecords": source_records,
         "records": consolidated_records,
     }

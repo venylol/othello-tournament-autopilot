@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,6 +83,55 @@ class Level22AuditTests(unittest.TestCase):
             self.assertEqual(audit["nodeCount"], 2)
             self.assertTrue((output / "audit.json").is_file())
 
+    def test_full_audit_accepts_terminal_only_game_with_zero_moves(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = root / "engine.exe"
+            engine.write_bytes(b"engine")
+            bundle = root / "bundle.json"
+            bundle.write_text(json.dumps({
+                "details": [{
+                    "id": "disconnect",
+                    "position": {"moves": [{"t": 690, "s": "LOSE:DISCONNECT"}]},
+                }]
+            }), encoding="utf-8")
+            output = root / "out"
+            output.mkdir()
+            game = {
+                "schema": "ega-game-analysis-v1",
+                "gameId": "disconnect",
+                "moveCount": 0,
+                "bundleWorkerId": 0,
+                "engine": {
+                    "path": str(engine.resolve()),
+                    "sha256": LEVEL_WRAPPER.sha256_file(engine),
+                    "level": 22,
+                    "threads": 16,
+                    "hash": 25,
+                    "book": "enabled-default",
+                },
+                "nodes": [],
+                "events": [{"sourceMoveIndex": 0, "thinkingTimeMs": 690}],
+            }
+            (output / "game_0_1_disconnect.json").write_text(
+                json.dumps(game), encoding="utf-8"
+            )
+            (output / "summary.json").write_text(json.dumps({
+                "schema": "ega-account-bundle-summary-v1",
+                "gameCount": 1,
+                "workerCount": 12,
+                "threadsPerConsole": 16,
+            }), encoding="utf-8")
+
+            audit = LEVEL_WRAPPER.audit_level22_outputs(
+                bundle, output, engine.resolve(), level=22, threads=16,
+                hash_level=25, workers=12, book="",
+            )
+
+            self.assertTrue(audit["ok"])
+            self.assertEqual(audit["nodeCount"], 0)
+            self.assertEqual(audit["eventCount"], 1)
+
 
 class SafeHintStageTests(unittest.TestCase):
     def test_server_contract_and_full_audit_gate(self) -> None:
@@ -114,7 +162,13 @@ class SafeHintStageTests(unittest.TestCase):
 class TournamentRunnerDefaultsTests(unittest.TestCase):
     def test_direct_runner_defaults_to_two_workers(self) -> None:
         runner_dir = ROOT.parent / "wechat-decrypt"
-        python = Path(sys.executable)
+        python_candidates = (
+            runner_dir / ".venv" / "Scripts" / "python.exe",
+            ROOT.parent.parent / "wechat-decrypt" / ".venv" / "Scripts" / "python.exe",
+        )
+        python = next((candidate for candidate in python_candidates if candidate.is_file()), None)
+        if python is None:
+            self.skipTest("wechat-decrypt virtual environment is not installed")
         code = (
             "import json,sys; "
             f"sys.path.insert(0, {str(runner_dir)!r}); "

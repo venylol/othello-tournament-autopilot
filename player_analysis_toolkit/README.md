@@ -9,14 +9,17 @@
 大型公开训练数据和模型不提交到 Git；版本化下载与校验方式见
 [`DATASETS.md`](DATASETS.md)。
 
+完整选手调查与玩家异常哨兵模式所依赖的数据、参照库、引擎和模型，需按
+[`LONG_TERM_MAINTENANCE.md`](LONG_TERM_MAINTENANCE.md) 的清单持续检查和版本化更新。
+
 ## 文件
 
 - `scripts/analysis/player_analysis.py`：数据汇总、子损、用时、个人开局库、留一法开局比较、
   外部参照组比较及统一运行入口。
 - `src/player_analysis_toolkit/analysis_core.py`：棋盘回放、8种对称归一化和全部统计函数。
 - `assets/standard_openings.json`：可手工维护的标准定式名称、别名和着手序列表。
-- `scripts/review/agent_offbook_review.py`：生成逐 ply 人工审查包、校验 Agent 手工脱谱标记，
-  并计算包含脱谱手在内的脱谱后统计。
+- `scripts/analysis/detect_offbook.py`：在 Level22 审计完成后生成逐局算法脱谱标签。
+- `scripts/analysis/offbook_analysis.py`：计算包含脱谱手在内的脱谱后统计。
 - `scripts/reporting/render_github_pdf.py`：把 Markdown 渲染成 GitHub Issue 风格 HTML/PDF。
 - `scripts/review/generate_review_checklist.py`：从既有调查 JSON 和固定模板生成审核信息速览表。
 - `templates/review_checklist_template.md`：审核信息速览表的 Markdown 模板。
@@ -123,93 +126,28 @@ python scripts/analysis/player_analysis.py standard-opening `
 脚本会拒绝非法着手序列、重复名称/别名，以及经过对称变换后重复的序列。若
 输入的是目录中尚未登记的合法坐标序列，仍可临时筛选，但不会获得定式名称。
 
-## 5. Agent 手工脱谱位置审查
+## 5. 算法脱谱登记与脱谱后分析
 
-该流程严格分成三个阶段。脚本不会自动判断、推荐或填写脱谱位置。
+正式调查在 Level22 完成并通过全量 audit 后，立即运行固定规则脱谱算法。每局
+都会在 `offbook_records.json` 中获得 `algorithmLabel`：找到锚点为 `offbook`，
+未找到为 `no_offbook`，不再生成审查包或等待 Agent 手工标注。
 
-审查重心是目标选手逐 ply 的 OQ 原始思考时间及其局内连续性。Agent 要人工识别
-从连续快速、像是熟悉路线的落子转为明显现场思考的首次可信转折，并结合前后
-多手排除偶发长考、强制着手、网络抖动和终局收官。不得使用固定秒数阈值批量
-生成结论。
+固定规则只分析目标棋手实着，clip/cap 为闭区间 ply 5–38。当前用时严格大于此前
+同一棋手全部实着用时中位数的1.75倍时形成用时候选；Level22 的落子前局面
+`bestEval` 首次满足 `abs(bestEval) > 6` 时形成估值截断点，等于正负6不触发。
+用时规则仅搜索截断点之前的节点；优先取更早的用时候选，否则取估值截断点，
+两者都没有则标记 `no_offbook`。
 
-Human Frequency Book 只作弱参考：父节点或子节点未见、次数低、比例低，都不
-能单独确定脱谱位置。样本内首次未见节点不得机械地写成锚点。EG 子损和选择
-前后连续性可用于理解背景；若思考时间没有给出可信的首次转折，应明确登记
-`no_offbook`，而不是从 Frequency Book 强行挑选一手。
-
-每局 `agentNote` 必须填写，并简洁说明锚点前后的原始用时连续性；若引用
-Frequency Book，须明确其弱参考地位。登记脚本会拒绝空备注，但不会自动判断
-备注内容或替 Agent 选择锚点。
-
-### 5.1 生成逐 ply 审查包
-
-目标选手模式会列出每局每个实际落子 ply 的原始 `thinkingTimeMs`，并给出同色
-留一法 Frequency Book 的父节点、结果节点、出现次数和比例。前者是人工审查的
-主要证据，后者只是弱历史参考：
+单独对已有 Level22 目录生成标签：
 
 ```powershell
-python scripts/review/agent_offbook_review.py offbook-packet `
-  --bundle "C:\path\account-bundle.json" `
+python scripts/analysis/detect_offbook.py `
+  --engine-directory "C:\path\engine_level22" `
   --account "sample_player" `
-  --mode target `
-  --exclude-from-book-game-id "reported_game_1" `
-  --exclude-from-book-game-id "reported_game_2" `
-  --output "C:\path\sample_player-offbook-packet.json"
+  --output "C:\path\offbook_records.json"
 ```
 
-排行榜高分选手使用 `--mode reference`。参照组包只给出每个 ply 的原始用时，
-不生成 Frequency Book 情况：
-
-```powershell
-python scripts/review/agent_offbook_review.py offbook-packet `
-  --bundle "C:\path\leader-bundle.json" `
-  --account "leader_id" `
-  --mode reference `
-  --output "C:\path\leader-offbook-packet.json"
-```
-
-### 5.2 Agent 手工标记并登记
-
-Agent 阅读审查包后手写标记文件；每局必须明确记录 `offbook` 或
-`no_offbook`。示例：
-
-```json
-{
-  "schema": "player-offbook-agent-marks-input-v1",
-  "account": "sample_player",
-  "mode": "target",
-  "reviewedBy": "agent",
-  "sourcePacketSha256": "可选，但建议填写审查包 SHA-256",
-  "marks": [
-    {
-      "gameId": "game_1",
-      "judgment": "offbook",
-      "offBookPly": 12,
-      "agentNote": "Agent 人工判断依据"
-    },
-    {
-      "gameId": "game_2",
-      "judgment": "no_offbook",
-      "offBookPly": null,
-      "agentNote": "Agent 人工审查后未标记脱谱点"
-    }
-  ]
-}
-```
-
-登记命令：
-
-```powershell
-python scripts/review/agent_offbook_review.py offbook-record `
-  --packet "C:\path\sample_player-offbook-packet.json" `
-  --marks "C:\path\sample_player-agent-marks.json" `
-  --output "C:\path\sample_player-offbook-records.json"
-```
-
-登记阶段强制检查标记属于目标选手本人：执白只能标白方着手，执黑只能标黑方
-着手。每局只允许一个首次脱谱点；输出已存在时脚本拒绝覆盖。
-
-### 5.3 脱谱后指标及排行榜参照比较
+### 5.1 脱谱后指标及排行榜参照比较
 
 统计配置示例：
 
@@ -239,11 +177,11 @@ python scripts/review/agent_offbook_review.py offbook-record `
 
 如果只统计某个已校验记录文件中的指定对局，可在对应 target 或 reference
 member 中加入 `"gameIds": ["game_1", "game_2"]`。脚本会拒绝空数组、重复
-gameId 或不属于该人工记录文件的 gameId。输出的 `postOffBookInclusive.loss.games`
+gameId 或不属于该脱谱记录文件的 gameId。输出的 `postOffBookInclusive.loss.games`
 会为每盘同时保留 `offBookPly`、`postOffBookStartsAtPly` 和
 `excludedPreOffBookMoveCount`，明确证明该统计已经排除锚点之前的目标选手着手。
 
-已经有合并人工记录文件时，reference group 可用
+已经有合并记录文件时，reference group 可用
 `membersFromConsolidated` 自动展开成员，避免手工重复列出每个账号：
 
 ```json
@@ -266,12 +204,12 @@ gameId 或不属于该人工记录文件的 gameId。输出的 `postOffBookInclu
 小于、等于、含等号经验位置及参照范围。
 
 ```powershell
-python scripts/review/agent_offbook_review.py offbook-stats `
+python scripts/analysis/offbook_analysis.py offbook-stats `
   --config "C:\path\offbook-stats-config.json" `
   --output "C:\path\offbook-stats.json"
 ```
 
-同一目标账号的被报告局与个人对照还可以在人工锚点切分后重新计算差值、整局
+同一目标账号的被报告局与个人对照还可以在算法锚点切分后重新计算差值、整局
 聚类 bootstrap、精确组合位置和两部分模型：
 
 ```json
@@ -290,13 +228,13 @@ python scripts/review/agent_offbook_review.py offbook-stats `
 ```
 
 ```powershell
-python scripts/review/agent_offbook_review.py offbook-model `
+python scripts/analysis/offbook_analysis.py offbook-model `
   --config "C:\path\offbook-model-config.json" `
   --output "C:\path\offbook-model.json"
 ```
 
 输出的 `fullGame` 与 `postOffBookInclusive` 使用完全相同的比较和模型字段；后一
-单元只读取各盘人工锚点及其后的目标选手着手，并包含锚点手本身。
+单元只读取各盘脱谱锚点及其后的目标选手着手，并包含锚点手本身。
 
 `offbook-model` 还在不改变以上两个旧单元的前提下新增固定四阶段输出。配置仍
 使用上例的 `bootstrap` 和 `seed`；阶段 bootstrap 使用 `seed + 200`，无需也不
@@ -323,7 +261,7 @@ plyCoordinateAudit
 ```
 
 固定闭区间为 `1–30 / 31–47 / 48–53 / 54–60`，等价半开区间为
-`[1,31) / [31,48) / [48,54) / [54,61)`。每局先执行人工脱谱硬切分，再按全局
+`[1,31) / [31,48) / [48,54) / [54,61)`。每局先执行算法脱谱硬切分，再按全局
 实际落子 ply 放入阶段；例如 `offBookPly=35` 的对局不会给前一阶段或 ply 31–34
 提供节点。每个阶段的 `reported` 和 `control` 分别给出原组局数、目标节点数、
 有效子损节点数、实际贡献局数/独立局数，以及局等权平均子损、着手等权平均
@@ -552,7 +490,7 @@ python scripts/reporting/render_github_pdf.py `
 
 ## 11. 生成审核信息速览表
 
-该流程只读取已有 OQ bundle、EG 汇总/单局 JSON、人工脱谱模型和高分参照统计，
+该流程只读取已有 OQ bundle、EG 汇总/单局 JSON、算法脱谱记录和高分参照统计，
 不会抓取网络数据或重跑引擎。OQ 公开对局需要更新时，先复用
 `scripts/data/oq_account_bundle.py` 生成新的 account bundle，再把该文件写入配置。
 
@@ -653,14 +591,10 @@ python scripts/analysis/run_player_investigation.py select-groups `
   --reported-to "2026-08-08T23:10:00+08:00"
 ```
 
-脚本随后生成 `offbook_packet.json`，并将状态置为 `awaiting_agent_review`。
-主 Agent 必须按包内策略逐局填写 `agent_marks.json`，再提交并自动继续：
-
-```powershell
-python scripts/analysis/run_player_investigation.py submit-marks `
-  --run-dir "C:\path\example-player-investigation" `
-  --marks "C:\path\example-player-investigation\agent_marks.json"
-```
+脚本随后依次执行 Player 画像和 Level22。Level22 完成并通过 audit 后，
+`offbook_detection` 立即为全部选中对局生成 `offbook_records.json`；每局都带有
+`offbook` 或 `no_offbook` 算法标签、锚点来源和计算证据。流程不等待人工脱谱审核，
+并继续运行 hint、模型适配、统计与最终报告。
 
 中断后使用 `resume`；查看顶层阶段状态使用 `status`。Level22、hint 和12模型适配
 还会在 `progress.json` 的 `nestedProgress` 字段中暴露原阶段进度文件。已完成
@@ -676,3 +610,55 @@ hint1 为12个 worker，hint6 为12个独占 worker；hint1 固定1线程且无 
 batch 128、timeout 900、最多2次尝试，并在完成后执行全量 audit。每个实着节点保留
 请求棋盘、setboard 回显、hint 回显、引擎哈希、request/worker/batch ID；Level22
 逐局原子写入并执行完整棋谱/引擎契约 audit，两类审计通过后才能进入后续阶段。
+
+## 13. 玩家异常哨兵模式 V1
+
+哨兵模式从冻结的双方 Elo 二维 Reference 自动筛查最近最多30局有坐标落子的棋局，不需要预先提供
+举报局。默认配置为仓库顶层 `sentinel_reference_config.json`；配置只用相对路径引用
+冻结 Reference 和派生缓存，不复制或重跑其中1,495局 Level22。
+
+公开仓库不把 Reference 大文件写入 Git 历史。首次运行前，从 Release
+`player-toolkit-sentinel-v1-20260815` 下载
+`oq-sentinel-reference-level22-1600plus-v1-20260814.zip`，解压到
+`research/offbook_detection/data/`。归档内保留目录名，解压后默认配置即可直接解析。
+
+```powershell
+python scripts/analysis/run_player_investigation.py start-sentinel `
+  --account example_player `
+  --output-dir "C:\path\example-player-sentinel" `
+  --reference-config sentinel_reference_config.json
+```
+
+`status` 和 `resume` 与普通调查共用。哨兵先剔除零坐标落子棋局（例如开局即掉线，
+不占30局名额），再自动选取最近最多30局并运行固定参数
+Level22和确定性脱谱算法，然后按目标方精确 oldR、对手精确 oldR、颜色及算法 scope
+进行二维 Reference 插值。调查 gameId 若已在 Reference 中，会在全部格、bootstrap池
+和伪玩家池中全局剔除其黑白两个方向。
+
+主指标是每局 `loss_ge4_rate`：`offbook` 从算法锚点手开始并包含该手；
+`no_offbook` 使用目标玩家整局实着。扫描只检查最强单局、全部对局，以及按外部
+强度残差稳定排序后的前缀 k，不枚举任意组合。默认10,000名伪玩家执行相同完整
+k扫描并校正选择偏差；固定候选再以10,000次整局 bootstrap 给出效应区间。
+WLD 固定包含 `global_placement_ply >= 39`，只评价 GE4 冻结组，不能另选举报局。
+
+只有 `concentrated_external_internal_anomaly` 和 `isolated_external_anomaly` 会产生
+非空 `reportedGameIds`。Reference门槛未通过时不运行个人模型；模型对照少于8局时
+也跳过个人适配。模型结果仅标记为支持、未支持或冲突，不能修改
+`selection_manifest.json`，也不输出作弊概率。
+
+主要输出为 `per_game_reference_scores.json/csv`、`pseudo_scan_replicates.csv`、
+`pseudo_scan_summary.json`、`sentinel_scan_results.json`、`selection_manifest.json`、
+`model_review_groups.json` 和 `report.json`。
+
+Reference 派生缓存可复现构建，但目标目录必须为空：
+
+```powershell
+python scripts/analysis/sentinel_analysis.py build-reference `
+  --reference-dir research/offbook_detection/data/oq_elo_matchup30_reference_level22_1600plus_20260814 `
+  --output-dir research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814
+```
+
+该命令只读取既有 Level22 JSON，并直接调用 `detect_offbook.py` 的确定性算法。
+当前冻结缓存的正式 `no_offbook` 池为黑方1条、白方0条，不足以执行强制留一局
+伪玩家校准；相关调查局会保留整局算法记录并显式标为 `not_calibratable`，不会跨
+颜色或 scope 借用分布。

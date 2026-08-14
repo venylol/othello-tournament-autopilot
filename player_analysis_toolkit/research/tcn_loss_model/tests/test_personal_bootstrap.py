@@ -76,5 +76,24 @@ class PersonalBootstrapTests(unittest.TestCase):
         self.assertAlmostEqual(report["pointEstimates"]["expected_wld_loss"], 0.5)
         self.assertEqual(report["wldApplicableNodes"], 1)
 
+    def test_reported_game_without_ply39_wld_nodes_has_zero_wld_contribution(self):
+        frame = pd.DataFrame({
+            "game_id": ["short", "long"], "wld_applicable": [False, True],
+        })
+        probabilities = {
+            "zero": np.array([[0.6, 0.6]]),
+            "ge4": np.array([[0.2, 0.2]]),
+            "ge10": np.array([[0.1, 0.1]]),
+        }
+        wld = np.array([[0.9, 0.5]])
+        member_draws = np.array([[0]])
+        game_draws = np.array([[0, 1]])
+        report = MODULE.summarize_predicted_group(
+            frame, probabilities, wld, ["short", "long"], member_draws, game_draws
+        )
+        self.assertAlmostEqual(report["pointEstimates"]["expected_wld_loss"], 0.25)
+        self.assertEqual(report["perGame"]["expected_wld_loss"][0]["nodes"], 0)
+        self.assertTrue(report["perGame"]["expected_wld_loss"][0]["noApplicableNodes"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -57,6 +57,26 @@ def game(game_id: str, losses: list[float], probabilities: bool = False) -> dict
 
 
 class LossGe10StatisticsTests(unittest.TestCase):
+    def test_oversized_exact_combination_uses_reproducible_capped_sampling(self) -> None:
+        universe = [{"gameId": f"g{index}"} for index in range(30)]
+        for index, row in enumerate(universe):
+            row["nodes"] = [{"lossClipped": float(index)}]
+        selected = {f"g{index}" for index in range(15)}
+        result = analysis_core.exact_combination_position(
+            universe, selected, maximum_combinations=100, seed=7
+        )
+        repeated = analysis_core.exact_combination_position(
+            universe, selected, maximum_combinations=100, seed=7
+        )
+        self.assertEqual(result, repeated)
+        self.assertEqual(result["status"], "monte_carlo")
+        self.assertEqual(result["combinationCount"], 155_117_520)
+        self.assertEqual(result["sampledCombinationCount"], 100)
+        self.assertEqual(result["seed"], 7)
+
+    def test_exact_combination_default_cap_is_one_million(self) -> None:
+        self.assertEqual(analysis_core.EXACT_COMBINATION_ENUMERATION_LIMIT, 1_000_000)
+
     def test_inclusive_threshold_boundaries(self) -> None:
         expected = {
             3: {"loss_ge4": False, "loss_ge10": False},

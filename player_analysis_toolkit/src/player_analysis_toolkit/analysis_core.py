@@ -1125,16 +1125,65 @@ def cluster_bootstrap_zero_loss_rate_difference(
     return [rounded(quantile(values, 0.025)), rounded(quantile(values, 0.975))]
 
 
-def exact_combination_position(universe: list[dict[str, Any]], selected_ids: set[str]) -> dict[str, Any]:
+EXACT_COMBINATION_ENUMERATION_LIMIT = 1_000_000
+
+
+def _combination_indices_from_rank(population: int, count: int, rank: int) -> list[int]:
+    """Unrank one lexicographically ordered combination without enumerating earlier rows."""
+    indices: list[int] = []
+    start = 0
+    remaining = count
+    while remaining:
+        for index in range(start, population):
+            suffix_count = math.comb(population - index - 1, remaining - 1)
+            if rank < suffix_count:
+                indices.append(index)
+                start = index + 1
+                remaining -= 1
+                break
+            rank -= suffix_count
+        else:
+            raise ValueError("combination rank is outside the valid range")
+    return indices
+
+
+def exact_combination_position(
+    universe: list[dict[str, Any]],
+    selected_ids: set[str],
+    *,
+    maximum_combinations: int = EXACT_COMBINATION_ENUMERATION_LIMIT,
+    seed: int = 20260801,
+) -> dict[str, Any]:
     count = len(selected_ids)
     total = math.comb(len(universe), count)
-    if total > 5_000_000:
-        raise ValueError(f"exact combination count {total} is too large")
     game_ids = [game["gameId"] for game in universe]
     game_means = [float(loss_game_summary(game)["meanLoss"]) for game in universe]
     selected_mean = statistics.fmean(
         value for game_id, value in zip(game_ids, game_means, strict=True) if game_id in selected_ids
     )
+    if total > maximum_combinations:
+        rng = random.Random(seed)
+        sampled_ranks = rng.sample(range(total), maximum_combinations)
+        lower = 0
+        upper = 0
+        for rank in sampled_ranks:
+            indexes = _combination_indices_from_rank(len(universe), count, rank)
+            value = statistics.fmean(game_means[index] for index in indexes)
+            lower += value <= selected_mean + 1e-12
+            upper += value >= selected_mean - 1e-12
+        return {
+            "status": "monte_carlo",
+            "method": "uniform-combination-rank-sample-without-replacement-v1",
+            "combinationCount": total,
+            "enumerationLimit": maximum_combinations,
+            "sampledCombinationCount": maximum_combinations,
+            "seed": seed,
+            "lowerTailMonteCarloP": rounded(lower / maximum_combinations),
+            "upperTailMonteCarloP": rounded(upper / maximum_combinations),
+            "twoTailMonteCarloP": rounded(
+                min(1.0, 2.0 * min(lower, upper) / maximum_combinations)
+            ),
+        }
     values = [
         statistics.fmean(combo)
         for combo in combinations(game_means, count)
@@ -1142,6 +1191,7 @@ def exact_combination_position(universe: list[dict[str, Any]], selected_ids: set
     lower = sum(value <= selected_mean + 1e-12 for value in values)
     upper = sum(value >= selected_mean - 1e-12 for value in values)
     return {
+        "status": "computed",
         "combinationCount": total,
         "ascendingRank": lower,
         "lowerTailExactP": rounded(lower / total),
@@ -1178,7 +1228,9 @@ def compare_loss_groups(
         "lossAtLeast10RateDifference": rounded(left["lossAtLeast10Rate"] - right["lossAtLeast10Rate"]),
         "lossAtLeast4RateClusterBootstrap95CI": threshold_intervals[4],
         "lossAtLeast10RateClusterBootstrap95CI": threshold_intervals[10],
-        "exactCombination": exact_combination_position(universe, {game["gameId"] for game in reported}),
+        "exactCombination": exact_combination_position(
+            universe, {game["gameId"] for game in reported}, seed=seed + 5
+        ),
     }
     if wld_from_ply is not None:
         left_mean_wld = float(left[ENGINE_WLD_TOTAL_FIELD]) / len(reported)

@@ -7,13 +7,13 @@ from unittest.mock import patch
 
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[1]
-REVIEW_SCRIPTS = TOOLKIT_ROOT / "scripts" / "review"
+ANALYSIS_SCRIPTS = TOOLKIT_ROOT / "scripts" / "analysis"
 SRC_ROOT = TOOLKIT_ROOT / "src"
-for path in (SRC_ROOT, REVIEW_SCRIPTS):
+for path in (SRC_ROOT, ANALYSIS_SCRIPTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import agent_offbook_review as offbook
+import offbook_analysis as offbook
 
 
 def game(game_id: str, phase_losses: list[float | None]) -> dict:
@@ -63,11 +63,13 @@ class OffBookPhaseBootstrapTests(unittest.TestCase):
             for ply, move in enumerate(("d3", "c3", "c4", "c5", "d6"), start=1)
         ]
         marks = {
-            "schema": "player-offbook-manual-records-v1",
+            "schema": "player-offbook-algorithm-records-v1",
             "mode": "target",
-            "reviewedBy": "agent",
+            "labeledBy": "algorithm",
             "account": "target",
-            "records": [{"gameId": "g1", "judgment": "offbook", "offBookPly": 3}],
+            "records": [{
+                "gameId": "g1", "judgment": "offbook", "algorithmLabel": "offbook", "offBookPly": 3,
+            }],
         }
         engine_games = [{"gameId": "g1", "nodes": source_nodes}]
         with patch.object(offbook, "read_json", return_value=marks), patch.object(

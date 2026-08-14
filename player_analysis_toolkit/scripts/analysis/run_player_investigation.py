@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """Resumable end-to-end Othello Quest player investigation orchestrator.
 
-The workflow deliberately has two Agent checkpoints:
-
-1. after account games are fetched, the main Agent selects explicit reported and
-   control game IDs, or an inclusive reported-game time range;
-2. after an off-book review packet is created, the main Agent submits one manual
-   judgment per selected game.
-
-All other stages invoke the repository's existing, auditable command-line tools.
+The main Agent selects the reported and control groups. After audited Level22
+analysis, all off-book labels are assigned by the repository's deterministic
+algorithm; no manual off-book review checkpoint is used.
 """
 
 from __future__ import annotations
@@ -33,15 +28,31 @@ PROJECT_ROOT = TOOLKIT_ROOT.parent
 SCHEMA_CONFIG = "player-investigation-run-config-v1"
 SCHEMA_PROGRESS = "player-investigation-progress-v1"
 WAITING_EXIT_CODE = 0
-MANUAL_REVIEWER = "agent"
-
 STAGE_ORDER = (
     "fetch_games",
     "select_groups",
-    "offbook_packet",
-    "offbook_review",
     "fetch_profiles",
     "level22",
+    "offbook_detection",
+    "hint_source",
+    "hint1",
+    "hint6",
+    "hint_assembly",
+    "model_materialization",
+    "profile_materialization",
+    "adapt_models",
+    "evaluate_reported",
+    "non_model_statistics",
+    "final_report",
+)
+SENTINEL_STAGE_ORDER = (
+    "acquisition",
+    "profile",
+    "level22",
+    "offbook_detection",
+    "sentinel_reference_scoring",
+    "sentinel_pseudo_scan",
+    "sentinel_group_freeze",
     "hint_source",
     "hint1",
     "hint6",
@@ -160,7 +171,9 @@ def default_paths() -> dict[str, str]:
     }
 
 
-def initial_progress(account: str, run_dir: Path) -> dict[str, Any]:
+def initial_progress(
+    account: str, run_dir: Path, stage_order: Iterable[str] = STAGE_ORDER
+) -> dict[str, Any]:
     return {
         "schema": SCHEMA_PROGRESS,
         "account": account,
@@ -171,7 +184,7 @@ def initial_progress(account: str, run_dir: Path) -> dict[str, Any]:
         "updatedAtUtc": utc_now(),
         "stages": {
             name: {"status": "pending", "updatedAtUtc": utc_now()}
-            for name in STAGE_ORDER
+            for name in stage_order
         },
     }
 
@@ -348,7 +361,7 @@ def create_run(args: argparse.Namespace) -> Run:
     config = {
         "schema": SCHEMA_CONFIG,
         "account": args.account,
-        "mode": args.mode,
+        "mode": "sentinel" if args.command == "start-sentinel" else args.mode,
         "createdAtUtc": utc_now(),
         "updatedAtUtc": utc_now(),
         "reportedGameIds": [],
@@ -372,6 +385,13 @@ def create_run(args: argparse.Namespace) -> Run:
         },
         "paths": default_paths(),
     }
+    if args.command == "start-sentinel":
+        config["referenceConfig"] = str(args.reference_config.resolve())
+        config["sourceBundle"] = str(args.bundle.resolve()) if args.bundle else None
+        config["parameters"]["oqMode"] = args.mode
+        config["parameters"]["pseudoPlayerReplicates"] = args.pseudo_replicates
+        config["parameters"]["sentinelBootstrapReplicates"] = args.sentinel_bootstrap
+        config["parameters"]["sentinelSeed"] = args.sentinel_seed
     for key in (
         "engine", "level22_python", "level22_runner", "base_checkpoint",
         "ensemble_manifest", "profile_normalization_reference_npz",
@@ -386,7 +406,8 @@ def create_run(args: argparse.Namespace) -> Run:
                 "profile_normalization_reference_npz": "profileNormalizationReferenceNpz",
             }.get(key, key)] = str(value.resolve())
     atomic_write_json(run_dir / "run_config.json", config)
-    atomic_write_json(run_dir / "progress.json", initial_progress(args.account, run_dir))
+    stage_order = SENTINEL_STAGE_ORDER if args.command == "start-sentinel" else STAGE_ORDER
+    atomic_write_json(run_dir / "progress.json", initial_progress(args.account, run_dir, stage_order))
     return Run(run_dir)
 
 
@@ -550,37 +571,12 @@ def resumable_attempt_directory(run: Run, config_key: str, preferred_name: str, 
         index += 1
 
 
-def run_pre_review(run: Run) -> None:
+def run_pre_model_stages(run: Run) -> None:
     if not run.config.get("reportedGameIds") or not run.config.get("controlGameIds"):
         run.set_overall("awaiting_group_selection", "select_groups")
         raise RuntimeError("explicit groups have not been selected")
     paths, parameters = run.config["paths"], run.config["parameters"]
     selected = run.path("selected_account_bundle.json")
-    packet = run.path("offbook_packet.json")
-    packet_command = [
-        run.python(), str(TOOLKIT_ROOT / "scripts" / "review" / "agent_offbook_review.py"),
-        "offbook-packet", "--bundle", str(selected), "--account", run.config["account"],
-        "--mode", "target", "--output", str(packet),
-    ]
-    for game_id in run.config["reportedGameIds"]:
-        packet_command.extend(["--exclude-from-book-game-id", game_id])
-    run.run_stage("offbook_packet", packet_command, [packet])
-    marks_template = run.path("agent_marks.template.json")
-    packet_value = read_json(packet)
-    atomic_write_json(marks_template, {
-        "schema": "player-offbook-agent-marks-input-v1",
-        "account": run.config["account"], "mode": "target", "reviewedBy": MANUAL_REVIEWER,
-        "marks": [
-            {"gameId": game["gameId"], "judgment": "offbook", "offBookPly": None, "agentNote": ""}
-            for game in packet_value["games"]
-        ],
-    })
-    run.set_stage("offbook_review", "awaiting_agent", instructions={
-        "packet": str(packet), "marksTemplate": str(marks_template),
-        "policy": packet_value.get("manualReviewPolicy"),
-        "command": "submit-marks --run-dir ... --marks agent_marks.json",
-        "parallelism": "The packet is ready before profile and Level22 work, so the main Agent may review it while those stages run.",
-    })
 
     profiles = run.path("profiles")
     profile_command = [
@@ -603,8 +599,247 @@ def run_pre_review(run: Run) -> None:
     ]
     run.run_stage("level22", level_command, [engine_dir], nested_progress=engine_dir / "progress.json")
 
+    records = run.path("offbook_records.json")
+    detection_command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "detect_offbook.py"),
+        "--engine-directory", str(engine_dir),
+        "--account", run.config["account"],
+        "--output", str(records),
+    ]
+    run.run_stage("offbook_detection", detection_command, [records])
+
     run_safe_hints(run)
-    run.set_overall("awaiting_agent_review", "offbook_review")
+    run.set_overall("ready", "model_materialization")
+
+
+def resolved_sentinel_reference(run: Run) -> dict[str, Path | dict[str, Any]]:
+    config_path = require_file(Path(run.config["referenceConfig"]), "sentinel reference config")
+    config = read_json(config_path)
+    if config.get("schema") != "player-anomaly-sentinel-reference-config-v1":
+        raise ValueError("unsupported sentinel reference config schema")
+    base = config_path.parent
+
+    def resolve(key: str) -> Path:
+        raw = Path(str(config[key]))
+        return raw.resolve() if raw.is_absolute() else (base / raw).resolve()
+
+    records = require_file(resolve("directedTargetRecords"), "sentinel directed target records")
+    manifest = require_file(resolve("referenceManifest"), "sentinel reference manifest")
+    derived = require_directory(resolve("derivedDirectory"), "sentinel derived reference")
+    manifest_value = read_json(manifest)
+    for item in manifest_value.get("files", []):
+        path = derived / str(item["path"])
+        if not path.is_file() or sha256_file(path) != item.get("sha256"):
+            raise ValueError(f"sentinel Reference manifest mismatch: {path}")
+    audit = read_json(derived / "reference_build_audit.json")
+    if audit.get("ok") is not True:
+        raise ValueError("sentinel derived Reference audit is not successful")
+    return {
+        "config": config,
+        "configPath": config_path,
+        "records": records,
+        "manifest": manifest,
+        "derived": derived,
+    }
+
+
+def run_sentinel_pre_scan_stages(run: Run) -> None:
+    paths, parameters = run.config["paths"], run.config["parameters"]
+    acquisition = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "sentinel_analysis.py"),
+        "acquire", "--account", run.config["account"],
+        "--mode", str(parameters["oqMode"]), "--output-dir", str(run.run_dir),
+    ]
+    source_bundle = run.config.get("sourceBundle")
+    if source_bundle:
+        acquisition.extend(["--bundle", str(source_bundle)])
+    run.run_stage("acquisition", acquisition, [
+        run.path("account_bundle.json"), run.path("selected_account_bundle.json"),
+        run.path("game_catalog.json"), run.path("games_metadata.csv"),
+    ])
+
+    selected = run.path("selected_account_bundle.json")
+    profiles = run.path("profiles")
+    profile_command = [
+        run.python(), str(MODEL_ROOT / "scripts" / "data" / "fetch_oq_player_profiles.py"),
+        "fetch", "--output-dir", str(profiles), "--concurrency", "1", "--resume",
+        "--allow-failures",
+    ]
+    for account in selected_accounts(run):
+        profile_command.extend(["--account", account])
+    run.run_stage("profile", profile_command, [profiles])
+
+    engine_dir = run.path("engine_level22")
+    level_command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "data" / "run_egaroucid_bundle.py"),
+        "--bundle", str(selected), "--output-dir", str(engine_dir),
+        "--runner", paths["level22Runner"], "--python", paths["level22Python"],
+        "--engine", paths["engine"], "--level", "22",
+        "--threads", str(parameters["level22Threads"]), "--hash", str(parameters["level22Hash"]),
+        "--workers", str(parameters["level22Workers"]),
+        "--wld-from-ply", "39", "--resume",
+    ]
+    run.run_stage("level22", level_command, [engine_dir], nested_progress=engine_dir / "progress.json")
+    records = run.path("offbook_records.json")
+    detection_command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "detect_offbook.py"),
+        "--engine-directory", str(engine_dir), "--account", run.config["account"],
+        "--output", str(records),
+    ]
+    run.run_stage("offbook_detection", detection_command, [records])
+
+
+def run_sentinel_scan_stages(run: Run) -> dict[str, Any]:
+    reference = resolved_sentinel_reference(run)
+    parameters = run.config["parameters"]
+    script = TOOLKIT_ROOT / "scripts" / "analysis" / "sentinel_analysis.py"
+    score_json = run.path("per_game_reference_scores.json")
+    score_csv = run.path("per_game_reference_scores.csv")
+    score_command = [
+        run.python(), str(script), "score",
+        "--bundle", str(run.path("selected_account_bundle.json")),
+        "--engine-dir", str(run.path("engine_level22")),
+        "--offbook-records", str(run.path("offbook_records.json")),
+        "--account", run.config["account"],
+        "--reference-records", str(reference["records"]),
+        "--output-json", str(score_json), "--output-csv", str(score_csv),
+    ]
+    run.run_stage("sentinel_reference_scoring", score_command, [score_json, score_csv])
+
+    replicate_csv = run.path("pseudo_scan_replicates.csv")
+    pseudo_summary = run.path("pseudo_scan_summary.json")
+    scan_json = run.path("sentinel_scan_results.json")
+    scan_command = [
+        run.python(), str(script), "scan", "--scores", str(score_json),
+        "--reference-records", str(reference["records"]),
+        "--replicate-output", str(replicate_csv),
+        "--summary-output", str(pseudo_summary), "--scan-output", str(scan_json),
+        "--replicates", str(parameters["pseudoPlayerReplicates"]),
+        "--bootstrap", str(parameters["sentinelBootstrapReplicates"]),
+        "--seed", str(parameters["sentinelSeed"]),
+    ]
+    run.run_stage("sentinel_pseudo_scan", scan_command, [replicate_csv, pseudo_summary, scan_json])
+
+    selection = run.path("selection_manifest.json")
+    model_groups = run.path("model_review_groups.json")
+    freeze_command = [
+        run.python(), str(script), "freeze", "--scan", str(scan_json), "--scores", str(score_json),
+        "--reference-config", str(reference["configPath"]),
+        "--reference-manifest", str(reference["manifest"]),
+        "--bundle", str(run.path("selected_account_bundle.json")),
+        "--level22-audit", str(run.path("engine_level22") / "audit.json"),
+        "--offbook-records", str(run.path("offbook_records.json")),
+        "--output", str(selection), "--model-groups-output", str(model_groups),
+        "--replicates", str(parameters["pseudoPlayerReplicates"]),
+        "--bootstrap", str(parameters["sentinelBootstrapReplicates"]),
+        "--seed", str(parameters["sentinelSeed"]),
+    ]
+    run.run_stage("sentinel_group_freeze", freeze_command, [selection, model_groups])
+    frozen = read_json(selection)
+    run.config["reportedGameIds"] = list(frozen["reportedGameIds"])
+    run.config["controlGameIds"] = list(frozen["modelControlGameIds"])
+    run.config["excludedGameIds"] = []
+    run.config["groupSelection"] = {
+        "method": "sentinel-v1-frozen-statistical-scan",
+        "selectionManifest": str(selection.resolve()),
+        "selectionManifestPayloadSha256": frozen["payloadSha256"],
+    }
+    run.save_config()
+    return frozen
+
+
+def set_stages_not_applicable(run: Run, stages: Iterable[str], reason: str) -> None:
+    for stage in stages:
+        if run.progress["stages"][stage].get("status") not in {"completed", "not_applicable"}:
+            run.set_stage(stage, "not_applicable", reason=reason)
+
+
+def run_non_model_statistics(run: Run) -> None:
+    paths, parameters = run.config["paths"], run.config["parameters"]
+    del paths
+    selected = run.path("selected_account_bundle.json")
+    analysis_dir = run.path("non_model")
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    analysis_config = {
+        "outputDirectory": str(analysis_dir), "bundle": str(selected),
+        "engineDirectory": str(run.path("engine_level22")), "account": run.config["account"],
+        "reportedGameIds": run.config["reportedGameIds"],
+        "bootstrap": parameters["bootstrapReplicates"],
+        "modelBootstrap": parameters["modelBootstrapReplicates"],
+        "seed": parameters["bootstrapSeed"], "wldFromPly": 39,
+    }
+    analysis_config_path = run.path("non_model_analysis_config.json")
+    if not analysis_config_path.exists():
+        atomic_write_json(analysis_config_path, analysis_config)
+    elif read_json(analysis_config_path) != analysis_config:
+        raise ValueError("non-model analysis config changed after it was materialized")
+    non_model_command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "player_analysis.py"),
+        "run-all", "--config", str(analysis_config_path),
+    ]
+    run.run_stage("non_model_statistics", non_model_command, [analysis_dir])
+
+
+def build_sentinel_report_without_model(run: Run) -> None:
+    selection = read_json(run.path("selection_manifest.json"))
+    non_model = run.path("non_model")
+    report = {
+        "schema": "player-anomaly-sentinel-report-v1",
+        "status": "completed",
+        "generatedAtUtc": utc_now(),
+        "account": run.config["account"],
+        "classification": selection["classification"],
+        "selection": selection,
+        "perGameReferenceScores": read_json(run.path("per_game_reference_scores.json")),
+        "sentinelScan": read_json(run.path("sentinel_scan_results.json")),
+        "pseudoScanSummary": read_json(run.path("pseudo_scan_summary.json")),
+        "model": {
+            "modelReviewReady": selection["modelReviewReady"],
+            "status": "not_run",
+            "reason": "No formal reported group, or fewer than eight model control games.",
+        },
+        "nonModel": {
+            "lossAndWld": read_json(non_model / "loss-analysis.json") if (non_model / "loss-analysis.json").is_file() else None,
+            "thinkingTime": read_json(non_model / "time-analysis.json") if (non_model / "time-analysis.json").is_file() else None,
+        },
+        "limitations": [
+            "Normal exceedance rates and intervals are not cheating probabilities.",
+            "WLD is a secondary metric and cannot create or replace a GE4-selected reported group.",
+            "Model output, when present, cannot modify the frozen selection manifest.",
+        ],
+    }
+    atomic_write_json(run.path("report.json"), report)
+    run.set_stage(
+        "final_report", "completed", outputs=[str(run.path("report.json"))],
+        outputSha256={str(run.path("report.json").resolve()): sha256_file(run.path("report.json"))},
+        completedAtUtc=utc_now(),
+    )
+    run.set_overall("completed", None)
+
+
+def run_sentinel(run: Run) -> None:
+    run_sentinel_pre_scan_stages(run)
+    frozen = run_sentinel_scan_stages(run)
+    conditional_model_stages = (
+        "hint_source", "hint1", "hint6", "hint_assembly", "model_materialization",
+        "profile_materialization", "adapt_models", "evaluate_reported",
+    )
+    if frozen["reportedGameIds"] and frozen["modelReviewReady"]:
+        validate_paths(run.config)
+        run_safe_hints(run)
+        run_model_and_report_stages(run)
+        return
+    reason = (
+        "Sentinel classification produced no formal reported game IDs."
+        if not frozen["reportedGameIds"]
+        else "Fewer than eight model control games; personal adaptation is not review-ready."
+    )
+    set_stages_not_applicable(run, conditional_model_stages, reason)
+    if frozen["reportedGameIds"]:
+        run_non_model_statistics(run)
+    else:
+        set_stages_not_applicable(run, ("non_model_statistics",), reason)
+    build_sentinel_report_without_model(run)
 
 
 def run_safe_hints(run: Run) -> None:
@@ -657,23 +892,6 @@ def run_safe_hints(run: Run) -> None:
     run.run_stage("hint_assembly", assembly_command, [assembled, assembly_manifest, hints / "merge_index.sqlite3"])
 
 
-def submit_marks(run: Run, source_marks: Path) -> None:
-    marks_value = read_json(require_file(source_marks, "Agent marks"))
-    marks_path = run.path("agent_marks.json")
-    if marks_path.exists() and read_json(marks_path) != marks_value:
-        raise ValueError("submitted marks differ from the already recorded Agent marks")
-    if not marks_path.exists():
-        atomic_write_json(marks_path, marks_value)
-    records = run.path("offbook_records.json")
-    command = [
-        run.python(), str(TOOLKIT_ROOT / "scripts" / "review" / "agent_offbook_review.py"),
-        "offbook-record", "--packet", str(run.path("offbook_packet.json")),
-        "--marks", str(marks_path), "--output", str(records),
-    ]
-    run.run_stage("offbook_review", command, [marks_path, records])
-    run.set_overall("ready", "model_materialization")
-
-
 def offbook_map(run: Run) -> tuple[dict[str, int], list[str]]:
     records = read_json(run.path("offbook_records.json"))["records"]
     reported = set(run.config["reportedGameIds"])
@@ -686,10 +904,9 @@ def offbook_map(run: Run) -> tuple[dict[str, int], list[str]]:
     return anchors, no_anchor
 
 
-def run_post_review(run: Run) -> None:
+def run_model_and_report_stages(run: Run) -> None:
     if not run.path("offbook_records.json").is_file():
-        run.set_overall("awaiting_agent_review", "offbook_review")
-        raise RuntimeError("validated off-book records are required")
+        raise RuntimeError("algorithmic off-book records are required")
     paths, parameters = run.config["paths"], run.config["parameters"]
     anchors, no_anchor = offbook_map(run)
     selected = run.path("selected_account_bundle.json")
@@ -825,6 +1042,7 @@ def build_final_report(run: Run, anchors: dict[str, int], no_anchor: list[str]) 
             "selection": run.config.get("groupSelection"),
         },
         "offbook": {
+            "labelSource": "first-long-think-absolute-evaluation-cutoff-v1",
             "anchorsInclusiveGlobalPlacementPly": anchors,
             "reportedGamesWithoutAnchor": no_anchor,
             "records": read_json(run.path("offbook_records.json")),
@@ -857,6 +1075,36 @@ def build_final_report(run: Run, anchors: dict[str, int], no_anchor: list[str]) 
             "Reported games without a defensible off-book anchor use all target-player moves in model evaluation; no synthetic anchor is assigned.",
         ],
     }
+    if run.config.get("mode") == "sentinel":
+        selection = read_json(run.path("selection_manifest.json"))
+        report["schema"] = "player-anomaly-sentinel-report-v1"
+        report["classification"] = selection["classification"]
+        report["selection"] = selection
+        report["perGameReferenceScores"] = read_json(run.path("per_game_reference_scores.json"))
+        report["sentinelScan"] = read_json(run.path("sentinel_scan_results.json"))
+        report["pseudoScanSummary"] = read_json(run.path("pseudo_scan_summary.json"))
+        report["model"]["modelReviewReady"] = selection["modelReviewReady"]
+        report["model"]["selectionManifestPayloadSha256"] = selection["payloadSha256"]
+        model_result = report["model"].get("reportedBootstrap") or {}
+        ge4_interval = (((model_result.get("groups") or {}).get("combined") or {}).get(
+            "bootstrap95PercentIntervals", {}
+        ) or {}).get("ge4") or {}
+        lower, upper = ge4_interval.get("lower"), ge4_interval.get("upper")
+        if lower is not None and upper is not None and float(upper) < 0:
+            relationship = "supportive"
+        elif lower is not None and upper is not None and float(lower) > 0:
+            relationship = "conflicting"
+        else:
+            relationship = "not_supportive"
+        report["model"]["relationshipToPrimarySelection"] = relationship
+        report["model"]["relationshipPolicy"] = (
+            "GE4 actual-minus-personal-model-expected whole-game bootstrap: upper<0 supportive; "
+            "lower>0 conflicting; otherwise not_supportive; never changes selection"
+        )
+        report["limitations"].extend([
+            "WLD is a secondary metric and cannot create or replace a GE4-selected reported group.",
+            "Model results are supporting, non-supporting, or conflicting evidence and cannot modify the frozen selection manifest.",
+        ])
     atomic_write_json(report_path, report)
     run.set_stage(
         "final_report", "completed", outputs=[str(report_path)],
@@ -899,12 +1147,38 @@ def validate_paths(config: dict[str, Any]) -> None:
             raise ValueError(f"player investigation requires {key}={expected}")
 
 
+def validate_sentinel_execution_paths(config: dict[str, Any]) -> None:
+    paths = config["paths"]
+    for key in ("python", "level22Python", "level22Runner", "engine"):
+        require_file(Path(paths[key]), key)
+    parameters = config["parameters"]
+    fixed_parallel = {"level22Workers": 12, "level22Threads": 16, "level22Hash": 25}
+    for key, expected in fixed_parallel.items():
+        if int(parameters[key]) != expected:
+            raise ValueError(f"sentinel investigation requires {key}={expected}")
+    for key in ("pseudoPlayerReplicates", "sentinelBootstrapReplicates"):
+        if int(parameters[key]) <= 0:
+            raise ValueError(f"{key} must be positive")
+    resolved_sentinel_reference(Run(Path(config["runDirectory"]))) if config.get("runDirectory") else None
+
+
 def command_start(args: argparse.Namespace) -> int:
     run = create_run(args)
     validate_paths(run.config)
     fetch_games(run, args.bundle)
     print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
     return WAITING_EXIT_CODE
+
+
+def command_start_sentinel(args: argparse.Namespace) -> int:
+    run = create_run(args)
+    # Store the run directory for validation without weakening the existing config schema.
+    run.config["runDirectory"] = str(run.run_dir)
+    run.save_config()
+    validate_sentinel_execution_paths(run.config)
+    run_sentinel(run)
+    print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
+    return 0
 
 
 def command_select(args: argparse.Namespace) -> int:
@@ -925,16 +1199,8 @@ def command_select(args: argparse.Namespace) -> int:
     else:
         raise ValueError("provide explicit game IDs or an inclusive reported time range")
     select_groups(run, reported, control, selection)
-    run_pre_review(run)
-    print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
-    return WAITING_EXIT_CODE
-
-
-def command_submit(args: argparse.Namespace) -> int:
-    run = Run(args.run_dir)
-    submit_marks(run, args.marks)
-    if not args.no_continue:
-        run_post_review(run)
+    run_pre_model_stages(run)
+    run_model_and_report_stages(run)
     print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
     return 0
 
@@ -948,17 +1214,20 @@ def command_resume(args: argparse.Namespace) -> int:
     if status == "awaiting_group_selection":
         print(json.dumps(run.progress, ensure_ascii=False, indent=2))
         return WAITING_EXIT_CODE
+    if run.config.get("mode") == "sentinel":
+        validate_sentinel_execution_paths(run.config)
+        run_sentinel(run)
+        print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
+        return 0
     pre_review_stages = (
-        "offbook_packet", "fetch_profiles", "level22", "hint_source", "hint1", "hint6", "hint_assembly"
+        "fetch_profiles", "level22", "offbook_detection", "hint_source", "hint1", "hint6", "hint_assembly"
     )
     if any(run.progress["stages"][name].get("status") != "completed" for name in pre_review_stages):
-        run_pre_review(run)
+        run_pre_model_stages(run)
         return WAITING_EXIT_CODE
     if not run.path("offbook_records.json").is_file():
-        run.set_overall("awaiting_agent_review", "offbook_review")
-        print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
-        return WAITING_EXIT_CODE
-    run_post_review(run)
+        raise FileNotFoundError("completed offbook_detection stage is missing offbook_records.json")
+    run_model_and_report_stages(run)
     print(json.dumps(read_json(run.progress_path), ensure_ascii=False, indent=2))
     return 0
 
@@ -1001,7 +1270,38 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--profile-normalization-reference-npz", type=Path)
     start.set_defaults(handler=command_start)
 
-    select = commands.add_parser("select-groups", help="record explicit IDs or an inclusive time range, then prepare review")
+    sentinel_start = commands.add_parser(
+        "start-sentinel",
+        help="investigate the most recent 30 games with coordinate placements using Sentinel V1",
+    )
+    sentinel_start.add_argument("--account", required=True)
+    sentinel_start.add_argument("--output-dir", type=Path, required=True)
+    sentinel_start.add_argument("--reference-config", type=Path, required=True)
+    sentinel_start.add_argument("--mode", default="5min", choices=("5min",))
+    sentinel_start.add_argument("--bundle", type=Path, help="use an existing account bundle instead of a network fetch")
+    sentinel_start.add_argument("--bootstrap", type=int, default=10_000)
+    sentinel_start.add_argument("--model-bootstrap", type=int, default=1_000)
+    sentinel_start.add_argument("--seed", type=int, default=20260801)
+    sentinel_start.add_argument("--model-seed", type=int, default=20260809)
+    sentinel_start.add_argument("--sentinel-seed", type=int, default=20260814)
+    sentinel_start.add_argument("--pseudo-replicates", type=int, default=10_000)
+    sentinel_start.add_argument("--sentinel-bootstrap", type=int, default=10_000)
+    sentinel_start.add_argument("--device", default="cuda:0")
+    sentinel_start.add_argument("--level22-threads", type=int, default=16)
+    sentinel_start.add_argument("--level22-hash", type=int, default=25)
+    sentinel_start.add_argument("--level22-workers", type=int, default=12)
+    sentinel_start.add_argument("--hint1-workers", type=int, default=12)
+    sentinel_start.add_argument("--hint6-workers", type=int, default=12)
+    sentinel_start.add_argument("--feature-workers", type=int, default=12)
+    sentinel_start.add_argument("--engine", type=Path)
+    sentinel_start.add_argument("--level22-python", type=Path)
+    sentinel_start.add_argument("--level22-runner", type=Path)
+    sentinel_start.add_argument("--base-checkpoint", type=Path)
+    sentinel_start.add_argument("--ensemble-manifest", type=Path)
+    sentinel_start.add_argument("--profile-normalization-reference-npz", type=Path)
+    sentinel_start.set_defaults(handler=command_start_sentinel)
+
+    select = commands.add_parser("select-groups", help="freeze the groups and run the automated investigation")
     add_run_dir(select)
     select.add_argument("--reported-game-id", action="append", default=[])
     select.add_argument("--control-game-id", action="append", default=[])
@@ -1015,13 +1315,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     select.set_defaults(handler=command_select)
 
-    submit = commands.add_parser("submit-marks", help="validate main-Agent off-book marks and continue")
-    add_run_dir(submit)
-    submit.add_argument("--marks", type=Path, required=True)
-    submit.add_argument("--no-continue", action="store_true")
-    submit.set_defaults(handler=command_submit)
-
-    resume = commands.add_parser("resume", help="resume the first incomplete non-Agent stage")
+    resume = commands.add_parser("resume", help="resume the first incomplete automated stage")
     add_run_dir(resume)
     resume.set_defaults(handler=command_resume)
 
@@ -1040,7 +1334,7 @@ def main(argv: list[str] | None = None) -> int:
         if run_dir and (Path(run_dir) / "progress.json").is_file():
             run = Run(Path(run_dir))
             run.progress["lastError"] = {"type": type(exc).__name__, "message": str(exc), "atUtc": utc_now()}
-            if run.progress["status"] not in {"awaiting_group_selection", "awaiting_agent_review"}:
+            if run.progress["status"] != "awaiting_group_selection":
                 run.progress["status"] = "failed"
             run.save_progress()
         raise

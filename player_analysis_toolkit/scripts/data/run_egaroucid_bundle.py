@@ -96,7 +96,8 @@ def audit_level22_outputs(
         ]
         nodes = game.get("nodes") if isinstance(game.get("nodes"), list) else []
         events = game.get("events") if isinstance(game.get("events"), list) else []
-        if len(nodes) != len(source_moves) or int(game.get("moveCount") or -1) != len(source_moves):
+        move_count = game.get("moveCount")
+        if len(nodes) != len(source_moves) or not isinstance(move_count, int) or move_count != len(source_moves):
             raise ValueError(f"Level22 audit node count mismatch for {game_id}")
         if len(events) != len(source_events):
             raise ValueError(f"Level22 audit event count mismatch for {game_id}")

@@ -13,6 +13,21 @@ The curated release set contains:
 - the final 11,200-game warm-start ensemble;
 - the base TCN checkpoint;
 - the Windows 9950X Egaroucid server handoff.
+- the Sentinel V1 operational Reference derived cache (2,990 directed
+  target-side records, including 2,758 formal 1600–2486 records).
+
+Sentinel V1 Reference release:
+
+- tag: `player-toolkit-sentinel-v1-20260815`;
+- asset: `oq-sentinel-reference-level22-1600plus-v1-20260814.zip`;
+- install by extracting the archive under
+  `player_analysis_toolkit/research/offbook_detection/data/`; the checked-in
+  `sentinel_reference_config.json` then resolves it by relative path.
+
+The Sentinel asset contains the operational derived records, summaries,
+source hashes, and build audit. It references but does not duplicate the 1,495
+Level22 engine JSON files. Its public source manifest uses repository-relative
+paths so local usernames and machine paths are not published.
 
 Generated smoke runs, superseded experiment snapshots, caches, logs, and
 player-specific investigation artifacts are intentionally excluded.

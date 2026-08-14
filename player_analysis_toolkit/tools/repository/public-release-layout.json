@@ -36,6 +36,10 @@
     {
       "name": "windows-9950x-egaroucid-handoff",
       "path": "research/server_handoffs/oq_egaroucid_windows_9950x_20260803_final"
+    },
+    {
+      "name": "oq-sentinel-reference-level22-1600plus-v1-20260814",
+      "path": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814"
     }
   ]
 }

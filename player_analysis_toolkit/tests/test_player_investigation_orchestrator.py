@@ -111,8 +111,10 @@ class DefaultPathValidationTests(unittest.TestCase):
         self.assertEqual(args.level22_hash, 25)
         self.assertEqual(args.hint6_workers, 12)
 
-    def test_marks_template_uses_accepted_manual_reviewer(self) -> None:
-        self.assertEqual(MODULE.MANUAL_REVIEWER, "agent")
+    def test_offbook_detection_runs_immediately_after_level22(self) -> None:
+        level_index = MODULE.STAGE_ORDER.index("level22")
+        self.assertEqual(MODULE.STAGE_ORDER[level_index + 1], "offbook_detection")
+        self.assertNotIn("offbook_review", MODULE.STAGE_ORDER)
 
     def test_default_human_opening_book_path_contract(self) -> None:
         path = Path(MODULE.default_paths()["humanOpeningBook"])

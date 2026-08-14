@@ -76,7 +76,7 @@ python scripts/analysis/run_player_investigation.py select-groups `
 
 ## 4. `select-groups` 是长命令
 
-`select-groups` 不只生成分组和审查包。它还会继续执行 Player 画像、Level22、hint1、hint6 和安全装配，最后才进入 `awaiting_agent_review`。
+`select-groups` 会执行 Player 画像、Level22、算法脱谱登记、hint1、hint6、安全装配以及后续模型与统计阶段，直到生成最终报告。
 
 个人调查使用固定并行契约：
 
@@ -109,46 +109,26 @@ hint_source/source_manifest.json -> shape.placements
 
 将它与 hint `progress.json` 中的提交计数比较，可以得到真实完成比例。
 
-## 5. 在计算期间完成人工脱谱审查
+## 5. Level22 后的算法脱谱登记
 
-`offbook_packet.json` 通常会早于 Level22 和 hint 计算完成。主 Agent 可以利用这段时间人工审查，不必等待预审计算全部结束。
+Level22 完成并通过 audit 后，`offbook_detection` 自动生成 `offbook_records.json`。
+不需要 Agent 审查包或手工提交标记。每局必须具有 `algorithmLabel`，取值为
+`offbook` 或 `no_offbook`，并记录锚点来源与计算证据。
 
-审查要求：
+规则固定为：只分析目标棋手实着；候选闭区间 ply 5–38；当前用时严格大于此前
+本人全部实着用时中位数的1.75倍时形成用时候选；首次严格满足
+`abs(bestEval) > 6` 的本人节点形成估值截断点。用时规则仅搜索截断点之前的
+节点；优先取更早的用时候选，否则取截断点，两者都没有则标记 `no_offbook`。
 
-- 必须覆盖审查包中的全部对局，不只是举报局。
-- 思考时间连续性是主要证据。
-- 不得使用固定秒数阈值批量标记。
-- Frequency Book 只作弱参考；首次未见节点不能单独确定脱谱。
-- 孤立长考后立即恢复短考，通常不足以构成持续转折。
-- 没有可信首次转折时明确写 `no_offbook`，不要制造锚点。
-- `offBookPly` 必须是目标选手本人的实际落子 ply。
-- 每局 `agentNote` 都要说明锚点前后的原始用时连续性。
-
-以 `agent_marks.template.json` 为结构基础生成 `agent_marks.json`，并保持：
-
-```json
-"reviewedBy": "agent"
-```
-
-建议填写 `sourcePacketSha256`，确保标记对应当前审查包。
-
-## 6. 提交标记与模型口径
-
-预审完成且标记文件准备好后运行：
-
-```powershell
-python scripts/analysis/run_player_investigation.py submit-marks `
-  --run-dir "investigations\example_player_investigation" `
-  --marks "investigations\example_player_investigation\agent_marks.json"
-```
+## 6. 算法标签与模型口径
 
 模型评估口径为：
 
-- 有人工锚点的举报局：从锚点手开始，包含锚点手。
-- 无人工锚点的举报局：使用目标选手整局全部着手。
+- 有算法锚点的举报局：从锚点手开始，包含锚点手。
+- 算法标签为 `no_offbook` 的举报局：使用目标选手整局全部着手。
 - 无锚点局会出现在 `fullGameFallbackNoOffbookGameIds`，不会获得合成锚点。
 
-提交后会继续执行模型物化、Profile 物化、12 成员个人适配、举报局推理、Bootstrap、常规子损/WLD/时间统计和最终报告。
+算法标签生成后会继续执行 hint、模型物化、Profile 物化、12成员个人适配、举报局推理、Bootstrap、常规子损/WLD/时间统计和最终报告。
 
 ## 7. 状态驱动的断点恢复
 
@@ -159,8 +139,7 @@ python scripts/analysis/run_player_investigation.py submit-marks `
 | `awaiting_group_selection` | 执行 `select-groups` |
 | 预审阶段 `running` | 继续轮询，不重复启动 |
 | 任一阶段 `failed` | 确认没有残留计算进程，再执行 `resume` |
-| `awaiting_agent_review` 且没有 `offbook_records.json` | 完成人工标记并执行 `submit-marks` |
-| 已有 `offbook_records.json`，后续阶段未完成 | 执行 `resume` |
+| `offbook_detection` 或后续阶段未完成 | 执行 `resume` |
 | `completed` | 校验并读取 `report.json` |
 
 续跑命令：
@@ -199,7 +178,7 @@ python scripts/analysis/run_player_investigation.py status `
 - WLD 差值及区间。
 - 12 模型实际减预期残差及区间。
 - 思考时间经验位置和显著异常项。
-- 人工锚点及无锚点整局回退情况。
+- 算法锚点、算法标签及无锚点整局回退情况。
 - 样本量、时间控制归一化和“统计结果不是作弊概率”等限制。
 
 不要只看点估计下结论。区间跨零时应明确说明证据不确定；思考时间单项异常也不能脱离其他指标直接解释为作弊。
@@ -210,11 +189,29 @@ python scripts/analysis/run_player_investigation.py status `
 1. 复述账号、时区、精确秒级闭区间。
 2. start，核对 game_catalog.json。
 3. select-groups，核对边界相邻对局和冻结后的两组 ID。
-4. 长时间运行预审阶段，同时人工阅读 offbook_packet.json。
-5. 写完整 agent_marks.json。
-6. 等待预审阶段完成，submit-marks。
-7. 每 30–60 秒轮询顶层和当前 nestedProgress。
-8. 失败时先查残留进程，再 resume。
-9. 校验 16/16、report.json 状态和 SHA-256。
-10. 不生成 Markdown，直接在会话总结结果与限制。
+4. 每 30–60 秒轮询顶层和当前 nestedProgress。
+5. 确认 Level22 后的 `offbook_detection` 生成每局算法标签。
+6. 失败时先查残留进程，再 resume。
+7. 校验 16/16、report.json 状态和 SHA-256。
+8. 不生成 Markdown，直接在会话总结结果与限制。
 ```
+
+## 10. 哨兵模式
+
+没有预先举报局、需要自动筛查最近最多30局有坐标落子的棋局时，使用：
+
+```powershell
+python scripts/analysis/run_player_investigation.py start-sentinel `
+  --account "example_player" `
+  --output-dir "investigations\example_player_sentinel" `
+  --reference-config sentinel_reference_config.json
+```
+
+该模式不等待人工选组。依次完成 acquisition、profile、Level22、双向兼容的算法
+脱谱、二维 Reference 评分、10,000名伪玩家完整扫描和名单冻结。只有冻结清单具有
+非空 `reportedGameIds` 且模型对照至少8局时才继续 hint 与12成员个人适配。
+
+恢复前先看 `progress.json`；已完成阶段的命令摘要和输出 SHA-256 一致时，`resume`
+不会重跑。正式判断以 `selection_manifest.json` 为准，模型报告不得更改该文件。
+`external_uniform_anomaly`、`internal_variation_only` 和 `no_clear_signal` 的
+`reportedGameIds` 都为空，不应为了进入旧模型流程而人工补组。

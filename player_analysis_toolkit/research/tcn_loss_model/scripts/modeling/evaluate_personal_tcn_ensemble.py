@@ -170,20 +170,35 @@ def summarize_predicted_group(
         for game_id in game_ids:
             game_mask = (group_games == game_id) & eligible
             if not game_mask.any():
-                raise ValueError(f"game {game_id} has no applicable nodes for {name}")
+                if name != "expected_wld_loss":
+                    raise ValueError(f"game {game_id} has no applicable nodes for {name}")
+                rows.append({
+                    "gameId": game_id,
+                    "nodes": 0,
+                    "meanEnsemblePrediction": 0.0,
+                    "noApplicableNodes": True,
+                })
+                continue
             rows.append({
                 "gameId": game_id,
                 "nodes": int(game_mask.sum()),
                 "meanEnsemblePrediction": float(ensemble[game_mask].mean()),
+                "noApplicableNodes": False,
             })
         per_game[name] = rows
         point[name] = float(np.mean([row["meanEnsemblePrediction"] for row in rows]))
         for replicate, (selected_members, selected_game_indexes) in enumerate(zip(member_draws, game_draws, strict=True)):
             replicate_prediction = member_values[selected_members].mean(axis=0)
-            bootstrap[name][replicate] = np.mean([
-                replicate_prediction[(group_games == games[index]) & eligible].mean()
-                for index in selected_game_indexes
-            ])
+            game_predictions = []
+            for index in selected_game_indexes:
+                game_mask = (group_games == games[index]) & eligible
+                if game_mask.any():
+                    game_predictions.append(float(replicate_prediction[game_mask].mean()))
+                elif name == "expected_wld_loss":
+                    game_predictions.append(0.0)
+                else:
+                    raise ValueError(f"game {games[index]} has no applicable nodes for {name}")
+            bootstrap[name][replicate] = np.mean(game_predictions)
     return {
         "aggregationUnit": "whole-game",
         "pointEstimates": point,

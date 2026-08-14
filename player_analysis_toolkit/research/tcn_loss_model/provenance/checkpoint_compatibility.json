@@ -1,6 +1,6 @@
 {
   "compatible": true,
-  "checkpoint": "C:\\Users\\MeroAF\\Desktop\\比赛编排\\player_analysis_toolkit\\research\\tcn_loss_model\\checkpoints\\base\\tcn_board_cnn_time_model_best.pt",
+  "checkpoint": "research/tcn_loss_model/checkpoints/base/tcn_board_cnn_time_model_best.pt",
   "checkpointSha256": "0d674783620eafdff425bf6aa7fa991a87f98f3aaf8ea669eb4612f96c5eeca0",
   "checkpointVersion": 2,
   "sourceEpoch": 596,

@@ -1,11 +1,11 @@
 {
   "schema": "tcn-loss-source-provenance-v1",
   "migrationDate": "2026-08-03",
-  "sourceRepository": "C:\\Users\\MeroAF\\Desktop\\repo_practiceAI\\Egaroucid",
+  "sourceRepository": "Egaroucid",
   "sourceCommit": "4b2c580349a8226f50932e670ee65b1de7571fdb",
   "readOnlySource": true,
-  "sourceTrainingScript": "C:\\Users\\MeroAF\\Desktop\\repo_practiceAI\\Egaroucid\\research\\train_tcn_board_cnn_model.py",
-  "sourceOutputDirectory": "C:\\Users\\MeroAF\\Desktop\\repo_practiceAI\\Egaroucid\\research\\main_tcn_time_model_outputs",
+  "sourceTrainingScript": "Egaroucid/research/train_tcn_board_cnn_model.py",
+  "sourceOutputDirectory": "Egaroucid/research/main_tcn_time_model_outputs",
   "files": [
     {"name": "train_tcn_board_cnn_model.py", "sha256": "9fa11b22f7400c5a7904499a4fab956f687a1f9fb2a88c2d47b4b9635ed5e0f4"},
     {"name": "tcn_board_cnn_time_model_best.pt", "sha256": "0d674783620eafdff425bf6aa7fa991a87f98f3aaf8ea669eb4612f96c5eeca0"},

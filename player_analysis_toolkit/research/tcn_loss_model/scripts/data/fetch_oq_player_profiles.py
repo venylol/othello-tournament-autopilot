@@ -226,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_parser.add_argument("--jitter", type=float, default=0.25)
     fetch_parser.add_argument("--concurrency", type=int, default=1)
     fetch_parser.add_argument("--resume", action="store_true")
+    fetch_parser.add_argument(
+        "--allow-failures",
+        action="store_true",
+        help="record unavailable profiles but return success after all requested accounts were attempted",
+    )
     smoke = commands.add_parser("live-smoke", help="explicit network smoke for hero9 and xiaojianbao")
     smoke.add_argument("--endpoint", default=DEFAULT_SOCKET_IO_URL)
     smoke.add_argument("--timeout", type=float, default=20.0)
@@ -238,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = fetch(args) if args.command == "fetch" else live_smoke(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result.get("failed", 0) == 0 else 2
+        return 0 if result.get("failed", 0) == 0 or getattr(args, "allow_failures", False) else 2
     except Exception:
         traceback.print_exc()
         return 1
