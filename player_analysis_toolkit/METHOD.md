@@ -319,3 +319,48 @@ bootstrap区间都完全位于正方向。这个 bootstrap 只描述冻结候选
 被伪玩家抽中后，强制留一 gameId 会使同颜色/scope池为空。因此 V1 将调查中的
 `no_offbook` 局保留算法和整局 GE4 记录，但明确标为
 `not_calibratable`；不跨颜色、不借用 `offbook` 分布，也不静默补值。
+
+## 十一、哨兵模式行棋质量等价 Elo V1
+
+行棋质量等价 Elo 是与异常扫描并存的新估计，不是账号当前显示 Elo、历史最高 Elo、
+作弊概率或未来胜率。实现位于 `src/player_analysis_toolkit/sentinel_elo.py`，CLI 位于
+`scripts/analysis/sentinel_elo_analysis.py`，配置冻结在
+`sentinel_elo_reference_config.json`。
+
+每条 directed game record 同时保存 `full_game` 和
+`post_offbook_inclusive` 两套四阶段指标。目标局有脱谱锚点时选择后者并包含锚点，
+否则选择前者。阶段边界固定为 global placement ply `[1,30]`、`[31,47]`、
+`[48,53]`、`[54,60]`；pass 不消耗新的 global placement ply。阶段内计算
+`lossPositive >= 4` 比例，四阶段严格等权；缺任一阶段的局整局排除。
+
+对每个试探整数 Elo `E=1600..2495` 和每个目标局，Reference 只保留正式、同色、
+同 scope、四阶段完整且通过账号与 gameId 双向泄漏排除的 directed records。距离为
+目标方 `(RT-E)` 与对手 `(RO-O_i)` 的二维欧氏距离，`K=ceil(N^(2/3))`，权重使用
+第 `K+1` 条距离作为三角核边界。距离加权均值和总体标准差将目标局整局 GE4 标准化
+为 `gameZ`；多个目标局的 `candidateZ` 是 gameZ 的算术平均，不按节点数、输赢或
+对手权重调整。
+
+校准采用 leave-one-account-out。已知 Elo 是冻结源 bundle 中该账号按 `created` 最新
+详情的赛后 `newR`，只用于校准后核对。账号按固定 SHA-256 种子拆成 calibration 和
+独立 validation 集；全局 `T95` 只有在独立 validation 覆盖率达到 95% 且样本门槛满足
+时才可启用。结果字段使用 `databaseCalibrated95Range` 和
+`databaseCalibrated95Intervals`，不使用会暗示理论正态区间的字段名。
+
+校准在当前快照使用16个账号 worker 并行；每个 worker 内部只使用一个树查询线程，
+避免线程过度竞争。完整公式、状态分类、产物哈希和独立覆盖率见
+`docs/SENTINEL_ESTIMATED_ELO_ACCEPTANCE_REPORT_20260819.md`。
+
+校准缓存只在显式执行 `calibrate-elo` 时生成或更新；普通 `estimate-elo` 运行直接读取
+参考目录中的 `elo_calibration.json`，不会每次重新统计满足至少10局的用户。数据库扩展后，
+必须以新的版本化参考目录重新构建 directed phase records、构建审计和
+`reference_sha256_manifest.json`，再重新执行 `calibrate-elo`，以更新用户集合、
+calibration/validation 划分、`T95`、曲线诊断阈值和校准案例。已有账号若要使用扩展后的
+数据库，也要重新运行估计；不得将新参考记录与旧校准缓存混用。该过程目前不自动检测扩展，
+也不做增量校准。旧 sentinel 的 scan/freeze 流程不受影响。
+
+单选手调查的联立入口是 `scripts/analysis/sentinel_unified_analysis.py`。它在旧 sentinel
+完成 Reference scoring、pseudo scan 和 freeze 后，读取旧流程产物并追加当前账号的预估 Elo，
+输出 `sentinel_unified_analysis.json`；`run_player_investigation.py` 只负责阶段编排和最终
+报告组装，不在其中实现 Elo 公式。统一调查流程也通过该脚本调用旧 sentinel 的兼容命令；
+旧 `sentinel_analysis.py` 可以继续保留给外部兼容调用，但不再是统一调查主入口。未来新增
+单选手指标应继续扩展该统一分析脚本。

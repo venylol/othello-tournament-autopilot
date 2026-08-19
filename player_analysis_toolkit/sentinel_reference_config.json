@@ -1,15 +1,17 @@
 {
   "schema": "player-anomaly-sentinel-reference-config-v1",
-  "version": "v1-20260814",
-  "referenceDirectory": "research/offbook_detection/data/oq_elo_matchup30_reference_level22_1600plus_20260814",
-  "derivedDirectory": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814",
-  "directedTargetRecords": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814/directed_target_records.jsonl",
-  "referenceManifest": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814/reference_sha256_manifest.json",
+  "version": "v6-20260819",
+  "referenceDirectory": "research/offbook_detection/data/oq_elo_matchup400_reference_level22_1600plus_20260815",
+  "derivedDirectory": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v6_20260819",
+  "directedTargetRecords": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v6_20260819/directed_target_records.jsonl",
+  "referenceManifest": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v6_20260819/reference_sha256_manifest.json",
   "formalEloMinimum": 1600,
-  "formalEloMaximum": 2486,
+  "formalEloMaximum": 2495,
+  "historicalFormalEloMaximum": 2495,
   "eloBandWidth": 100,
+  "targetPerUnorderedPair": 400,
   "wldFromGlobalPlacementPlyInclusive": 39,
   "pseudoPlayerReplicates": 10000,
   "fixedCandidateBootstrapReplicates": 10000,
-  "randomSeed": 20260814
+  "randomSeed": 20260815400
 }

@@ -53,6 +53,7 @@ SENTINEL_STAGE_ORDER = (
     "sentinel_reference_scoring",
     "sentinel_pseudo_scan",
     "sentinel_group_freeze",
+    "sentinel_unified_analysis",
     "hint_source",
     "hint1",
     "hint6",
@@ -200,6 +201,26 @@ class Run:
             raise ValueError("unsupported run_config.json schema")
         if self.progress.get("schema") != SCHEMA_PROGRESS:
             raise ValueError("unsupported progress.json schema")
+        if self.config.get("mode") == "sentinel" and "sentinel_unified_analysis" not in self.progress.get("stages", {}):
+            stages = dict(self.progress["stages"])
+            migrated: dict[str, dict[str, Any]] = {}
+            inserted = False
+            for name, value in stages.items():
+                migrated[name] = value
+                if name == "sentinel_group_freeze":
+                    migrated["sentinel_unified_analysis"] = {
+                        "status": "pending",
+                        "updatedAtUtc": utc_now(),
+                        "migration": "added unified sentinel analysis stage",
+                    }
+                    inserted = True
+            if not inserted:
+                migrated["sentinel_unified_analysis"] = {
+                    "status": "pending",
+                    "updatedAtUtc": utc_now(),
+                    "migration": "added unified sentinel analysis stage",
+                }
+            self.progress["stages"] = migrated
 
     def save_config(self) -> None:
         self.config["updatedAtUtc"] = utc_now()
@@ -387,6 +408,7 @@ def create_run(args: argparse.Namespace) -> Run:
     }
     if args.command == "start-sentinel":
         config["referenceConfig"] = str(args.reference_config.resolve())
+        config["eloReferenceConfig"] = str(args.elo_reference_config.resolve())
         config["sourceBundle"] = str(args.bundle.resolve()) if args.bundle else None
         config["parameters"]["oqMode"] = args.mode
         config["parameters"]["pseudoPlayerReplicates"] = args.pseudo_replicates
@@ -603,6 +625,7 @@ def run_pre_model_stages(run: Run) -> None:
     detection_command = [
         run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "detect_offbook.py"),
         "--engine-directory", str(engine_dir),
+        "--bundle", str(selected),
         "--account", run.config["account"],
         "--output", str(records),
     ]
@@ -646,7 +669,7 @@ def resolved_sentinel_reference(run: Run) -> dict[str, Path | dict[str, Any]]:
 def run_sentinel_pre_scan_stages(run: Run) -> None:
     paths, parameters = run.config["paths"], run.config["parameters"]
     acquisition = [
-        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "sentinel_analysis.py"),
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "sentinel_unified_analysis.py"),
         "acquire", "--account", run.config["account"],
         "--mode", str(parameters["oqMode"]), "--output-dir", str(run.run_dir),
     ]
@@ -683,7 +706,8 @@ def run_sentinel_pre_scan_stages(run: Run) -> None:
     records = run.path("offbook_records.json")
     detection_command = [
         run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "detect_offbook.py"),
-        "--engine-directory", str(engine_dir), "--account", run.config["account"],
+        "--engine-directory", str(engine_dir), "--bundle", str(selected),
+        "--account", run.config["account"],
         "--output", str(records),
     ]
     run.run_stage("offbook_detection", detection_command, [records])
@@ -692,7 +716,7 @@ def run_sentinel_pre_scan_stages(run: Run) -> None:
 def run_sentinel_scan_stages(run: Run) -> dict[str, Any]:
     reference = resolved_sentinel_reference(run)
     parameters = run.config["parameters"]
-    script = TOOLKIT_ROOT / "scripts" / "analysis" / "sentinel_analysis.py"
+    script = TOOLKIT_ROOT / "scripts" / "analysis" / "sentinel_unified_analysis.py"
     score_json = run.path("per_game_reference_scores.json")
     score_csv = run.path("per_game_reference_scores.csv")
     score_command = [
@@ -748,6 +772,28 @@ def run_sentinel_scan_stages(run: Run) -> dict[str, Any]:
     return frozen
 
 
+def run_sentinel_unified_analysis(run: Run) -> None:
+    output = run.path("sentinel_unified_analysis.json")
+    elo_config = Path(run.config.get(
+        "eloReferenceConfig", TOOLKIT_ROOT / "sentinel_elo_reference_config.json"
+    )).resolve()
+    command = [
+        run.python(), str(TOOLKIT_ROOT / "scripts" / "analysis" / "sentinel_unified_analysis.py"),
+        "run",
+        "--account", run.config["account"],
+        "--bundle", str(run.path("selected_account_bundle.json")),
+        "--engine-dir", str(run.path("engine_level22")),
+        "--offbook-records", str(run.path("offbook_records.json")),
+        "--elo-reference-config", str(elo_config),
+        "--output-dir", str(run.run_dir),
+    ]
+    run.run_stage(
+        "sentinel_unified_analysis",
+        command,
+        [output, run.path("estimated_elo")],
+    )
+
+
 def set_stages_not_applicable(run: Run, stages: Iterable[str], reason: str) -> None:
     for stage in stages:
         if run.progress["stages"][stage].get("status") not in {"completed", "not_applicable"}:
@@ -793,6 +839,8 @@ def build_sentinel_report_without_model(run: Run) -> None:
         "perGameReferenceScores": read_json(run.path("per_game_reference_scores.json")),
         "sentinelScan": read_json(run.path("sentinel_scan_results.json")),
         "pseudoScanSummary": read_json(run.path("pseudo_scan_summary.json")),
+        "estimatedElo": read_json(run.path("estimated_elo") / "estimated_elo.json"),
+        "unifiedSentinelAnalysis": read_json(run.path("sentinel_unified_analysis.json")),
         "model": {
             "modelReviewReady": selection["modelReviewReady"],
             "status": "not_run",
@@ -820,6 +868,7 @@ def build_sentinel_report_without_model(run: Run) -> None:
 def run_sentinel(run: Run) -> None:
     run_sentinel_pre_scan_stages(run)
     frozen = run_sentinel_scan_stages(run)
+    run_sentinel_unified_analysis(run)
     conditional_model_stages = (
         "hint_source", "hint1", "hint6", "hint_assembly", "model_materialization",
         "profile_materialization", "adapt_models", "evaluate_reported",
@@ -1042,7 +1091,7 @@ def build_final_report(run: Run, anchors: dict[str, int], no_anchor: list[str]) 
             "selection": run.config.get("groupSelection"),
         },
         "offbook": {
-            "labelSource": "first-long-think-absolute-evaluation-cutoff-v1",
+            "labelSource": "first-log-time-or-abs6-with-post-fast-v5",
             "anchorsInclusiveGlobalPlacementPly": anchors,
             "reportedGamesWithoutAnchor": no_anchor,
             "records": read_json(run.path("offbook_records.json")),
@@ -1051,6 +1100,8 @@ def build_final_report(run: Run, anchors: dict[str, int], no_anchor: list[str]) 
             "lossAndWld": read_json(run.path("non_model") / "loss-analysis.json"),
             "thinkingTime": read_json(run.path("non_model") / "time-analysis.json"),
         },
+        "estimatedElo": read_json(run.path("estimated_elo") / "estimated_elo.json"),
+        "unifiedSentinelAnalysis": read_json(run.path("sentinel_unified_analysis.json")),
         "model": {
             "eligibleReportedGameIds": sorted(run.config["reportedGameIds"]),
             "fullGameFallbackNoOffbookGameIds": no_anchor,
@@ -1068,6 +1119,8 @@ def build_final_report(run: Run, anchors: dict[str, int], no_anchor: list[str]) 
             "safeHints": artifact_entry(run.path("hints")),
             "modelReady": artifact_entry(profile_dir / "personal_model_ready_profile.npz"),
             "personalEnsemble": artifact_entry(run.path("model") / "adapters" / "personal_ensemble_manifest.json"),
+            "sentinelUnifiedAnalysis": artifact_entry(run.path("sentinel_unified_analysis.json")),
+            "estimatedElo": artifact_entry(run.path("estimated_elo")),
         },
         "limitations": [
             "Statistical intervals and p-values are not cheating probabilities.",
@@ -1083,6 +1136,8 @@ def build_final_report(run: Run, anchors: dict[str, int], no_anchor: list[str]) 
         report["perGameReferenceScores"] = read_json(run.path("per_game_reference_scores.json"))
         report["sentinelScan"] = read_json(run.path("sentinel_scan_results.json"))
         report["pseudoScanSummary"] = read_json(run.path("pseudo_scan_summary.json"))
+        report["estimatedElo"] = read_json(run.path("estimated_elo") / "estimated_elo.json")
+        report["unifiedSentinelAnalysis"] = read_json(run.path("sentinel_unified_analysis.json"))
         report["model"]["modelReviewReady"] = selection["modelReviewReady"]
         report["model"]["selectionManifestPayloadSha256"] = selection["payloadSha256"]
         model_result = report["model"].get("reportedBootstrap") or {}
@@ -1159,6 +1214,9 @@ def validate_sentinel_execution_paths(config: dict[str, Any]) -> None:
     for key in ("pseudoPlayerReplicates", "sentinelBootstrapReplicates"):
         if int(parameters[key]) <= 0:
             raise ValueError(f"{key} must be positive")
+    require_file(Path(config.get(
+        "eloReferenceConfig", TOOLKIT_ROOT / "sentinel_elo_reference_config.json"
+    )), "sentinel Elo reference config")
     resolved_sentinel_reference(Run(Path(config["runDirectory"]))) if config.get("runDirectory") else None
 
 
@@ -1277,6 +1335,11 @@ def build_parser() -> argparse.ArgumentParser:
     sentinel_start.add_argument("--account", required=True)
     sentinel_start.add_argument("--output-dir", type=Path, required=True)
     sentinel_start.add_argument("--reference-config", type=Path, required=True)
+    sentinel_start.add_argument(
+        "--elo-reference-config", type=Path,
+        default=TOOLKIT_ROOT / "sentinel_elo_reference_config.json",
+        help="versioned database-calibrated Elo reference configuration",
+    )
     sentinel_start.add_argument("--mode", default="5min", choices=("5min",))
     sentinel_start.add_argument("--bundle", type=Path, help="use an existing account bundle instead of a network fetch")
     sentinel_start.add_argument("--bootstrap", type=int, default=10_000)

@@ -51,7 +51,7 @@ def bilateral_game() -> tuple[dict, dict]:
         black = ply % 2 == 1
         nodes.append(engine_node(
             ply, "black-id" if black else "white-id", "black" if black else "white",
-            loss=float(ply), time=200 if ply == 5 else 100,
+            loss=float(ply), time=5501 if ply == 5 else 100,
         ))
     game = {
         "gameId": "双向局", "black": {"account": "black-id"},
@@ -59,6 +59,7 @@ def bilateral_game() -> tuple[dict, dict]:
     }
     detail = {
         "id": "双向局", "created": "2026-08-14T00:00:00Z",
+        "tcb": 300000,
         "players": [{"id": "black-id", "oldR": 1650}, {"id": "white-id", "oldR": 1750}],
     }
     return game, detail
@@ -148,21 +149,21 @@ class SentinelV1Tests(unittest.TestCase):
 
     def test_01_same_reference_game_runs_algorithm_for_both_sides(self) -> None:
         game, _ = bilateral_game()
-        black = detect.detect_game(game, "black-id")
-        white = detect.detect_game(game, "white-id")
+        black = detect.detect_game(game, "black-id", 300000)
+        white = detect.detect_game(game, "white-id", 300000)
         self.assertEqual({black["targetColor"], white["targetColor"]}, {"black", "white"})
         self.assertEqual(black["gameId"], white["gameId"])
 
     def test_02_one_side_can_be_offbook_and_other_no_offbook(self) -> None:
         game, _ = bilateral_game()
-        black = detect.detect_game(game, "black-id")
-        white = detect.detect_game(game, "white-id")
+        black = detect.detect_game(game, "black-id", 300000)
+        white = detect.detect_game(game, "white-id", 300000)
         self.assertEqual(black["algorithmLabel"], "offbook")
         self.assertEqual(white["algorithmLabel"], "no_offbook")
 
     def test_03_no_offbook_uses_all_target_nodes(self) -> None:
         game, detail = bilateral_game()
-        mark = detect.detect_game(game, "white-id")
+        mark = detect.detect_game(game, "white-id", 300000)
         record = sentinel.make_directed_record(
             game, detail, "white", mark, Path("engine/game.json"), "a" * 64,
             in_main_matrix=True, partition_scope="test",
@@ -173,7 +174,7 @@ class SentinelV1Tests(unittest.TestCase):
 
     def test_04_offbook_scope_includes_anchor(self) -> None:
         game, detail = bilateral_game()
-        mark = detect.detect_game(game, "black-id")
+        mark = detect.detect_game(game, "black-id", 300000)
         record = sentinel.make_directed_record(
             game, detail, "black", mark, Path("engine/game.json"), "a" * 64,
             in_main_matrix=True, partition_scope="test",
@@ -186,7 +187,7 @@ class SentinelV1Tests(unittest.TestCase):
     def test_05_pass_event_does_not_create_loss_node(self) -> None:
         game, detail = bilateral_game()
         game["events"] = [{"sourceMoveIndex": 2, "eventType": "pass", "thinkingTimeMs": 999}]
-        mark = detect.detect_game(game, "white-id")
+        mark = detect.detect_game(game, "white-id", 300000)
         record = sentinel.make_directed_record(
             game, detail, "white", mark, Path("engine/game.json"), "b" * 64,
             in_main_matrix=True, partition_scope="test",
@@ -283,6 +284,8 @@ class SentinelV1Tests(unittest.TestCase):
             orchestrator, "run_sentinel_scan_stages", return_value=frozen
         ), patch.object(orchestrator, "validate_paths"), patch.object(
             orchestrator, "run_safe_hints"
+        ), patch.object(
+            orchestrator, "run_sentinel_unified_analysis"
         ), patch.object(orchestrator, "run_model_and_report_stages") as model:
             orchestrator.run_sentinel(fake_run)
         model.assert_called_once_with(fake_run)

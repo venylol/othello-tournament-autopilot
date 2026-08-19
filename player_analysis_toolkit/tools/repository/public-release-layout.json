@@ -38,8 +38,12 @@
       "path": "research/server_handoffs/oq_egaroucid_windows_9950x_20260803_final"
     },
     {
-      "name": "oq-sentinel-reference-level22-1600plus-v1-20260814",
-      "path": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814"
+      "name": "oq-sentinel-reference-level22-1600plus-v6-20260819",
+      "path": "research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v6_20260819"
+    },
+    {
+      "name": "oq-sentinel-elo-reference-level22-1600plus-v5-20260819",
+      "path": "research/offbook_detection/data/oq_sentinel_elo_reference_level22_1600plus_v5_20260819"
     }
   ]
 }

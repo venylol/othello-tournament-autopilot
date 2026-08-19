@@ -132,17 +132,22 @@ python scripts/analysis/player_analysis.py standard-opening `
 都会在 `offbook_records.json` 中获得 `algorithmLabel`：找到锚点为 `offbook`，
 未找到为 `no_offbook`，不再生成审查包或等待 Agent 手工标注。
 
-固定规则只分析目标棋手实着，clip/cap 为闭区间 ply 5–38。当前用时严格大于此前
-同一棋手全部实着用时中位数的1.75倍时形成用时候选；Level22 的落子前局面
-`bestEval` 首次满足 `abs(bestEval) > 6` 时形成估值截断点，等于正负6不触发。
-用时规则仅搜索截断点之前的节点；优先取更早的用时候选，否则取估值截断点，
-两者都没有则标记 `no_offbook`。
+固定规则只分析目标棋手从 ply 5 开始的实着，不设最大 ply。每局按规定时限计算
+动态用时阈值：`5500ms × ln(1 + 时限秒数) ÷ ln(301)`。Level22 落子前局面的
+`abs(bestEval) <= 6` 是时间锚点的可搜索范围；首次 `abs(bestEval) > 6` 的目标方
+节点形成估值截断点，等于正负6仍可参与时间搜索。若截断点之前存在用时严格超过
+动态阈值的目标方实着，依次检查这些时间候选；否则检查估值截断点。每个候选都
+查看其后最多4个目标方实着，快棋阈值为
+`2000ms × ln(1 + 时限秒数) ÷ ln(301)`；若出现连续3步用时小于等于快棋阈值，
+该候选被否决。后续不足3个目标方实着时保留候选并登记证据不足。第一个通过检查
+的候选作为脱谱锚点；所有候选均被否决或根本没有候选时标记 `no_offbook`。
 
 单独对已有 Level22 目录生成标签：
 
 ```powershell
 python scripts/analysis/detect_offbook.py `
   --engine-directory "C:\path\engine_level22" `
+  --bundle "C:\path\selected_account_bundle.json" `
   --account "sample_player" `
   --output "C:\path\offbook_records.json"
 ```
@@ -617,11 +622,6 @@ batch 128、timeout 900、最多2次尝试，并在完成后执行全量 audit�
 举报局。默认配置为仓库顶层 `sentinel_reference_config.json`；配置只用相对路径引用
 冻结 Reference 和派生缓存，不复制或重跑其中1,495局 Level22。
 
-公开仓库不把 Reference 大文件写入 Git 历史。首次运行前，从 Release
-`player-toolkit-sentinel-v1-20260815` 下载
-`oq-sentinel-reference-level22-1600plus-v1-20260814.zip`，解压到
-`research/offbook_detection/data/`。归档内保留目录名，解压后默认配置即可直接解析。
-
 ```powershell
 python scripts/analysis/run_player_investigation.py start-sentinel `
   --account example_player `
@@ -655,10 +655,80 @@ Reference 派生缓存可复现构建，但目标目录必须为空：
 ```powershell
 python scripts/analysis/sentinel_analysis.py build-reference `
   --reference-dir research/offbook_detection/data/oq_elo_matchup30_reference_level22_1600plus_20260814 `
-  --output-dir research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814
+  --output-dir research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v6_20260819
 ```
 
 该命令只读取既有 Level22 JSON，并直接调用 `detect_offbook.py` 的确定性算法。
 当前冻结缓存的正式 `no_offbook` 池为黑方1条、白方0条，不足以执行强制留一局
 伪玩家校准；相关调查局会保留整局算法记录并显式标为 `not_calibratable`，不会跨
 颜色或 scope 借用分布。
+
+### 哨兵模式行棋质量等价 Elo（v1）
+
+这是与上述异常扫描并存的独立功能，不改变旧 sentinel 的 `scan`、`freeze`、Reference
+或输出语义。实现规格、冻结边界和验收记录见
+[`docs/SENTINEL_ESTIMATED_ELO_IMPLEMENTATION_SPEC.md`](docs/SENTINEL_ESTIMATED_ELO_IMPLEMENTATION_SPEC.md)
+和 [`docs/SENTINEL_ESTIMATED_ELO_ACCEPTANCE_REPORT_20260819.md`](docs/SENTINEL_ESTIMATED_ELO_ACCEPTANCE_REPORT_20260819.md)。
+
+固定四阶段为 global placement ply 1–30、31–47、48–53、54–60；每局四阶段等权，
+再按整局对参考库做距离加权标准化，最后对最近最多30局做局等权整数网格搜索。
+该功能不使用机器学习，目标账号自己的显示 Elo 不进入估计。
+
+构建冻结 Level22 的双 scope 参考派生库（目录必须为空）：
+
+```powershell
+python scripts/analysis/sentinel_elo_analysis.py build-elo-reference
+```
+
+构建 leave-one-account-out 校准并验证数据库校准 95% 范围：
+
+```powershell
+python scripts/analysis/sentinel_elo_analysis.py calibrate-elo
+```
+
+单选手调查的统一分析入口是
+`scripts/analysis/sentinel_unified_analysis.py`。`run_player_investigation.py start-sentinel`
+会在旧 sentinel 的 Reference scoring、pseudo scan 和 freeze 完成后自动调用
+它，将旧 sentinel 摘要与本次预估 Elo 合并到 `sentinel_unified_analysis.json`，再写入最终
+`report.json` 的 `estimatedElo` 和 `unifiedSentinelAnalysis` 字段。直接调用
+`sentinel_elo_analysis.py estimate-elo` 只适合单独调试或复算 Elo，不是完整调查入口。
+
+统一脚本同时保留旧 sentinel 和 Elo 的兼容命令族；以后新增与单选手调查有关的指标，应扩展
+该统一脚本，不应再新增平行的单选手分析入口。统一调查流程已通过该脚本调用旧 sentinel
+的 acquire/score/scan/freeze 兼容命令，因此旧脚本可作为兼容接口保留，不再是统一调查的
+主入口。具体仓库约束见 [`AGENTS.md`](AGENTS.md)。
+
+对一个已有目标账号 bundle、Level22 目录和脱谱记录运行估计：
+
+```powershell
+python scripts/analysis/sentinel_elo_analysis.py estimate-elo `
+  --account example_player `
+  --bundle "C:\path\selected_account_bundle.json" `
+  --engine-dir "C:\path\engine_level22" `
+  --offbook-records "C:\path\offbook_records.json" `
+  --output-dir "C:\path\estimated-elo"
+```
+
+输出包括 `estimated_elo.json`、`estimated_elo_curve.csv`、`estimated_elo_games.csv` 和
+`estimated_elo_phase_diagnostics.csv`。结果名称固定为“所选最近有效对局的平均行棋质量
+等价 Elo”；数据库校准范围不是理论正态置信区间。
+
+#### 校准缓存与数据库扩展
+
+`calibrate-elo` 是一次性的数据库级校准步骤，结果缓存为参考目录中的
+`elo_calibration.json`，并同时保存 `elo_calibration_cases.jsonl` 作为校准审计明细。
+`estimate-elo` 只读取已有校准缓存，不会在每次目标账号估计时重新计算。
+
+当正式参考数据库扩展时，不能继续沿用旧校准缓存。应使用新的版本化输出目录依次：
+
+1. 重新运行 `build-elo-reference`，生成包含新增对局的 directed phase records、构建审计和
+   `reference_sha256_manifest.json`；
+2. 对新的参考目录运行 `calibrate-elo`，重新计算满足至少 10 局的用户集合、
+   calibration/validation 划分、`T95`、曲线诊断阈值和校准案例；
+3. 让后续 `estimate-elo` 指向新的参考目录。已有目标账号如需使用扩展后的数据库，也应
+   重新运行估计，以纳入新的 Reference 分布和新的 `K`；
+4. 不要把新 directed records 与旧 `elo_calibration.json` 混用。该流程目前不自动检测数据库
+   扩展，也不做增量校准。
+
+数据库扩展只影响这套独立的 estimated-Elo 参考/校准流水线，不要求重跑旧 sentinel 的
+`scan`、`freeze` 或旧输出流程。

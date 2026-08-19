@@ -24,8 +24,8 @@
 | 12 成员主 ensemble | 完整调查；哨兵的条件模型阶段 | `research/tcn_loss_model/models/primary_wld_ensemble12/ensemble_manifest.json` | 新训练集或新模型在冻结验证集上通过正式验收 | 每个成员 checkpoint、文件大小和 SHA-256；保持 manifest 为 `completed`，或同步修改运行校验合同 |
 | 基础 TCN checkpoint | 完整调查；哨兵的条件模型阶段 | `research/tcn_loss_model/checkpoints/base/tcn_board_cnn_time_model_best.pt` | backbone、特征顺序、预处理或 checkpoint 格式改变 | `PRIMARY_MODEL.json`、预处理快照、兼容性测试和公开发布资产 |
 | 哨兵参照入口 | 哨兵 | `sentinel_reference_config.json` | 启用新参照总体、新版本分箱/范围、判定口径或随机复现参数 | `version`、源/派生目录、directed records、SHA-256 manifest、Elo 范围、分箱宽度、WLD 起始 ply、bootstrap 次数和 seed |
-| 哨兵源参照总体 | 哨兵 | `research/offbook_detection/data/oq_elo_matchup30_reference_level22_1600plus_20260814/` | 当前 OQ 玩家/等级/对局分布不再具有代表性，样本覆盖不足，或 Level22 引擎合同改变 | 新建带日期/版本的源目录；重新抓取 bundle、完成全部 Level22 结果和 audit；不要覆盖旧总体 |
-| 哨兵派生参照 | 哨兵 | `research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v1_20260814/` | 源参照、脱谱算法、指标定义、分箱或 Level22 合同任一改变 | 用 `sentinel_analysis.py build-reference` 全量重建；确认 `reference_build_audit.json` 的 `ok=true`，再生成并核对 `reference_sha256_manifest.json` |
+| 哨兵源参照总体 | 哨兵 | `research/offbook_detection/data/oq_elo_matchup400_reference_level22_1600plus_20260815/` | 当前 OQ 玩家/等级/对局分布不再具有代表性，样本覆盖不足，或 Level22 引擎合同改变 | 新建带日期/版本的源目录；重新抓取 bundle、完成全部 Level22 结果和 audit；不要覆盖旧总体 |
+| 哨兵派生参照 | 哨兵 | `research/offbook_detection/data/oq_sentinel_reference_level22_1600plus_v6_20260819/` | 源参照、脱谱算法、指标定义、分箱或 Level22 合同任一改变 | 用 `sentinel_analysis.py build-reference` 全量重建；确认 `reference_build_audit.json` 的 `ok=true`，再生成并核对 `reference_sha256_manifest.json` |
 | Egaroucid 引擎及 Level22 合同 | 两条链路 | 仓库同级的 `Egaroucid_for_Console_7_8_1_Windows_AVX512_AMD/`，以及 `wechat-decrypt/agent_egaroucid_analysis.py` | 引擎版本、默认 book、输出 JSON、评估尺度、命令行参数或运行器格式改变 | 重新做 Level22 合同审计；重建哨兵源/派生参照；评估是否需要重算训练 hint、归一化数据和模型 |
 
 哨兵的统计扫描本身不读取 TCN 模型。只有扫描得到正式报告局，且至少有 8 盘模型

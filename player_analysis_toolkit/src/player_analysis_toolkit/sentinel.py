@@ -103,8 +103,8 @@ def canonical_sha256(value: Any) -> str:
 
 def band_specs() -> list[dict[str, Any]]:
     result = []
-    for lower in range(MIN_ELO, MAX_ELO + 1, ELO_WIDTH):
-        upper = min(lower + ELO_WIDTH, MAX_ELO)
+    for lower in range(MIN_ELO, 2401, ELO_WIDTH):
+        upper = MAX_ELO if lower == 2400 else lower + ELO_WIDTH
         result.append({
             "lower": lower,
             "upper": upper,
@@ -116,6 +116,33 @@ def band_specs() -> list[dict[str, Any]]:
 
 BANDS = band_specs()
 BAND_BY_LOWER = {int(item["lower"]): item for item in BANDS}
+
+
+def configure_elo_bounds(minimum: int, maximum: int, width: int) -> None:
+    global MIN_ELO, MAX_ELO, ELO_WIDTH, BANDS, BAND_BY_LOWER
+    if minimum != 1600 or width != 100 or maximum < 2400:
+        raise ValueError("sentinel Reference requires minimum=1600, width=100, maximum>=2400")
+    MIN_ELO = int(minimum)
+    MAX_ELO = int(maximum)
+    ELO_WIDTH = int(width)
+    BANDS = band_specs()
+    BAND_BY_LOWER = {int(item["lower"]): item for item in BANDS}
+
+
+def configure_from_reference_config(path: str | Path) -> None:
+    value = read_json(path)
+    if value.get("schema") != "player-anomaly-sentinel-reference-config-v1":
+        raise ValueError("unsupported sentinel Reference config schema")
+    configure_elo_bounds(
+        int(value["formalEloMinimum"]),
+        int(value["formalEloMaximum"]),
+        int(value["eloBandWidth"]),
+    )
+
+
+_ACTIVE_REFERENCE_CONFIG = Path(__file__).resolve().parents[2] / "sentinel_reference_config.json"
+if _ACTIVE_REFERENCE_CONFIG.is_file():
+    configure_from_reference_config(_ACTIVE_REFERENCE_CONFIG)
 
 
 def formal_band(rating: float) -> dict[str, Any] | None:

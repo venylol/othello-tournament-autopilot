@@ -13,6 +13,9 @@ The curated release set contains:
 - the final 11,200-game warm-start ensemble;
 - the base TCN checkpoint;
 - the Windows 9950X Egaroucid server handoff.
+- the expanded 10,244-game sentinel V6 directed reference, including the
+  deterministic per-side offbook anchors;
+- the calibrated sentinel estimated-Elo V5 directed phase reference.
 - the Sentinel V1 operational Reference derived cache (2,990 directed
   target-side records, including 2,758 formal 1600–2486 records).
 
@@ -31,6 +34,11 @@ paths so local usernames and machine paths are not published.
 
 Generated smoke runs, superseded experiment snapshots, caches, logs, and
 player-specific investigation artifacts are intentionally excluded.
+
+Install the two sentinel archives by extracting their top-level directories
+under `research/offbook_detection/data/`. The repository-level
+`sentinel_reference_config.json` and `sentinel_elo_reference_config.json`
+already point at those versioned directory names.
 
 To rebuild the assets, run:
 

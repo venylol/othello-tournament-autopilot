@@ -73,12 +73,19 @@ def build_reference(reference_directory: Path, output_directory: Path) -> dict[s
 
     selection = sentinel.read_json(selection_path)
     games = selection.get("games")
-    if not isinstance(games, list) or len(games) != 1495:
-        raise ValueError("frozen Reference must contain exactly 1,495 selected games")
+    if not isinstance(games, list) or not games:
+        raise ValueError("frozen Reference must contain selected games")
+    game_count = len(games)
     game_ids = [str(row.get("gameId") or "") for row in games]
-    if not all(game_ids) or len(set(game_ids)) != 1495:
+    if not all(game_ids) or len(set(game_ids)) != game_count:
         raise ValueError("selected Reference game IDs must be unique and non-empty")
     bundle = sentinel.read_json(bundle_path)
+    bundle_selection = bundle.get("selection") or {}
+    sentinel.configure_elo_bounds(
+        int(bundle_selection.get("minimumElo", 1600)),
+        int(bundle_selection.get("maximumElo", 2486)),
+        int(bundle_selection.get("binWidth", 100)),
+    )
     details = {str(row.get("id") or ""): row for row in bundle.get("details", [])}
     if set(details) != set(game_ids):
         raise ValueError("selected account bundle and partition selection disagree on game IDs")
@@ -88,9 +95,9 @@ def build_reference(reference_directory: Path, output_directory: Path) -> dict[s
     }
     if set(engine_index) != set(game_ids):
         raise ValueError("engine game index and selection disagree on game IDs")
-    completion_audit = require_ok(reference / "reference_completion_audit.json", 1495)
-    partition_audit = require_ok(reference / "partition_engine_index_audit.json", 1495)
-    level22_audit = require_ok(reference / "engine_level22" / "audit.json", 1495)
+    completion_audit = require_ok(reference / "reference_completion_audit.json", game_count)
+    partition_audit = require_ok(reference / "partition_engine_index_audit.json", game_count)
+    level22_audit = require_ok(reference / "engine_level22" / "audit.json", game_count)
     contract = completion_audit.get("contract") or {}
     expected_contract = {
         "level": 22, "workers": 12, "threadsPerConsole": 16,
@@ -120,7 +127,7 @@ def build_reference(reference_directory: Path, output_directory: Path) -> dict[s
         black, white = sentinel._player_pair(detail)
         for color, target in (("black", black), ("white", white)):
             target_id = str(target.get("id") or "")
-            algorithm = DETECT.detect_game(engine_game, target_id)
+            algorithm = DETECT.detect_game(engine_game, target_id, detail.get("tcb"))
             if algorithm["targetColor"] != color:
                 raise ValueError(f"deterministic algorithm returned wrong target side for {game_id}")
             record = sentinel.make_directed_record(
@@ -151,10 +158,10 @@ def build_reference(reference_directory: Path, output_directory: Path) -> dict[s
         )
         for color in sentinel.COLORS for scope in sentinel.SCOPES
     }
-    if len(engine_files_seen) != 1495 or len(directed_records) != 2990:
+    if len(engine_files_seen) != game_count or len(directed_records) != game_count * 2:
         raise ValueError("Reference derivation did not produce exactly two directed records per game")
-    if main_games != 1379 or low_games != 116 or formal_records != 2758:
-        raise ValueError("Reference main-matrix/low-extension directed counts do not match the frozen scope")
+    if formal_records != main_games * 2:
+        raise ValueError("formal directed count does not equal twice the main-matrix game count")
 
     record_jsonl = output / "directed_target_records.jsonl"
     record_csv = output / "directed_target_records.csv"
@@ -187,7 +194,7 @@ def build_reference(reference_directory: Path, output_directory: Path) -> dict[s
             {"path": name, "sha256": digest}
             for name, digest in source_hashes_before.items()
         ],
-        "level22FilesReferencedNotCopied": 1495,
+        "level22FilesReferencedNotCopied": game_count,
         "engineContract": expected_contract,
         "deterministicOffbookAlgorithm": {
             "script": str(DETECT_PATH.resolve()),
@@ -216,10 +223,10 @@ def build_reference(reference_directory: Path, output_directory: Path) -> dict[s
             key: count >= 2 for key, count in formal_scope_color_counts.items()
         },
         "checks": {
-            "all1495GameIdsHaveLevel22": len(engine_files_seen) == 1495,
-            "bothSidesHaveAlgorithmRecord": len(directed_records) == 2990,
+            "allSelectedGameIdsHaveLevel22": len(engine_files_seen) == game_count,
+            "bothSidesHaveAlgorithmRecord": len(directed_records) == game_count * 2,
             "sourcePartitionCountsAgree": partition_audit.get("mainMatrixGameCount") == main_games and partition_audit.get("lowEloExtensionGameCount") == low_games,
-            "formalDenominatorIs1600Through2486MainMatrixOnly": formal_records == 2758,
+            "formalDenominatorMatchesConfiguredMainMatrix": formal_records == main_games * 2,
             "targetNodesMatchPlayerAndColor": True,
             "offBookPlyIsTargetPlacementWhenPresent": True,
             "noOffbookHasNullPly": all(row["offBookPly"] is None for row in directed_records if row["algorithmLabel"] == "no_offbook"),
